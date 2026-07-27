@@ -146,7 +146,7 @@
               <div id="password-field" class="field secret-field">
                 <label for="password">
                   <span data-i18n-zh="密码" data-i18n-en="Password">密码</span>
-                  <small data-i18n-zh="连接成功后以 Base64 保存" data-i18n-en="Saved as Base64 after a successful connection">连接成功后以 Base64 保存</small>
+                  <small data-i18n-zh="连接成功后使用 AES-GCM 加密保存" data-i18n-en="Encrypted with AES-GCM after a successful connection">连接成功后使用 AES-GCM 加密保存</small>
                 </label>
                 <span class="input-action-wrap">
                   <input id="password" name="password" type="password" maxlength="4096" autocomplete="current-password" />
@@ -235,9 +235,9 @@
 
           <p
             class="privacy-note"
-            data-i18n-zh="连接成功后会自动加入此浏览器的历史记录；密码以可逆的 Base64 编码保存，私钥不会保存。"
-            data-i18n-en="Successful connections are added to this browser's history automatically; passwords use reversible Base64, while private keys are not saved."
-          >连接成功后会自动加入此浏览器的历史记录；密码以可逆的 Base64 编码保存，私钥不会保存。</p>
+            data-i18n-zh="连接成功后会自动加入此浏览器的历史记录；密码使用当前浏览器配置的密钥加密，私钥不会保存。密钥缺失或不匹配时，密码将留空。"
+            data-i18n-en="Successful connections are added to this browser's history automatically; passwords are encrypted with a key held by this browser profile, while private keys are not saved. The password remains blank if the key is missing or does not match."
+          >连接成功后会自动加入此浏览器的历史记录；密码使用当前浏览器配置的密钥加密，私钥不会保存。密钥缺失或不匹配时，密码将留空。</p>
         </aside>
 
         <main class="workspace">
