@@ -1455,6 +1455,14 @@ function createDecoder(encoding: string): TextDecoder {
   }
 }
 
+// UTF-8 -> Base64, matching the decoder in applyURLParameters (and the
+// canonical form enforced by decodeLegacyPassword).
+function encodePasswordForURL(password: string): string {
+  let binary = '';
+  for (const byte of new TextEncoder().encode(password)) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
 function copySafeLink(): void {
   applyFormDefaults();
   const error = validateProfileFields();
@@ -1469,8 +1477,12 @@ function copySafeLink(): void {
   url.searchParams.set('term', ui.termType.value);
   if (ui.initialCommand.value) url.searchParams.set('command', ui.initialCommand.value);
   if (ui.encoding.value !== 'utf-8') url.searchParams.set('encoding', ui.encoding.value);
+  const includesPassword = authMethod() === 'password' && ui.password.value !== '';
+  if (includesPassword) url.searchParams.set('password', encodePasswordForURL(ui.password.value));
   void navigator.clipboard.writeText(url.toString()).then(
-    () => toast(bilingual('安全连接链接已复制（不含凭据）。', 'Safe connection link copied (credentials excluded).')),
+    () => toast(includesPassword
+      ? bilingual('连接链接已复制（含 Base64 密码，粘贴即自动连接，请谨慎分享）。', 'Connection link copied (Base64 password included; pasting auto-connects — share carefully).')
+      : bilingual('连接链接已复制（不含凭据）。', 'Connection link copied (credentials excluded).')),
     () => toast(bilingual('无法访问剪贴板。', 'Could not access the clipboard.'), 'error'),
   );
 }
@@ -1514,7 +1526,7 @@ function applyURLParameters(): boolean {
     try {
       const bytes = Uint8Array.from(atob(legacyPassword), (character) => character.charCodeAt(0));
       ui.password.value = new TextDecoder().decode(bytes);
-      toast(bilingual('已载入旧版密码 URL，使用后请从浏览器历史记录中删除。', 'A legacy password URL was loaded. Remove it from browser history after use.'), 'error');
+      toast(bilingual('已从链接载入密码，使用后请从浏览器历史记录中删除该链接。', 'Password loaded from the link. Remove the link from browser history after use.'), 'error');
     } catch {
       toast(bilingual('密码 URL 参数不是有效的 Base64。', 'The password URL parameter is not valid Base64.'), 'error');
     }

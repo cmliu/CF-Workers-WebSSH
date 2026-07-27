@@ -15,7 +15,7 @@
 - 首次连接时暂停认证并显示主机 SHA-256 指纹，确认后才会发送 SSH 凭据。
 - SSH 连接成功后自动写入浏览器本地“历史记录”；条目统一以 `用户名@主机:端口` 命名，第二行显示最后连接时间。
 - 历史记录可恢复连接配置、经 AES-GCM 加密的密码和主机指纹，但不保存私钥。
-- 支持 UTF-8、GB18030、Big5 显示编码、初始命令和无凭据分享链接。
+- 支持 UTF-8、GB18030、Big5 显示编码、初始命令和分享链接（密码认证时链接携带 Base64 密码，粘贴即自动连接）。
 - 提供一次性会话票据、同源检查、HTTPS 强制、安全响应头和公网目标校验。
 - 运行时无 SSH 第三方依赖，SSH 数据包、密钥交换、加密、认证和通道逻辑均使用 TypeScript 与 Web Crypto 实现。
 
@@ -77,7 +77,7 @@ Cloudflare Worker
 - API 和 WebSocket 必须来自页面同源 `Origin`；Cloudflare 边缘上的 HTTP API 请求会被拒绝，页面请求会重定向至 HTTPS。
 - 域名解析后逐个检查公网地址，并直接连接已验证 IP，以限制 SSRF 与 DNS 重绑定。
 - SSH 主机密钥会验证交换签名并计算 `SHA256:` 指纹；没有固定指纹时，认证会暂停等待用户确认。
-- SSH 连接成功后，连接配置会自动写入浏览器 Local Storage 的“历史记录”。密码使用 AES-256-GCM 加密，Local Storage 仅保存密码密文、随机 IV 和格式版本；随机生成的不可导出密钥保存在当前站点的 IndexedDB 中，不写入 Local Storage。密钥缺失、不匹配或密文校验失败时，历史记录仍会载入，但密码字段保持为空。私钥不会写入浏览器存储，任何 SSH 凭据都不会写入 Durable Object 存储。凭据输入框在发起授权后立即清空，Worker 在生成认证请求后释放凭据引用。
+- SSH 连接成功后，连接配置会自动写入浏览器 Local Storage 的“历史记录”。密码使用 AES-256-GCM 加密，Local Storage 仅保存密码密文、随机 IV 和格式版本；随机生成的不可导出密钥保存在当前站点的 IndexedDB 中，不写入 Local Storage。密钥缺失、不匹配或密文校验失败时，历史记录仍会载入，但密码字段保持为空。私钥不会写入浏览器存储，任何 SSH 凭据都不会写入 Durable Object 存储。凭据输入框在连接生命周期内保留已输入内容（历史记录可随时恢复密码），仅在切换历史记录、清空表单或载入新配置时清空；Worker 在生成认证请求后释放凭据引用。
 - 响应设置 CSP、HSTS、`X-Frame-Options`、`X-Content-Type-Options` 等安全头。
 
 ### 信任边界
@@ -457,7 +457,7 @@ ssh-keygen -t ed25519 -f webssh_ed25519 -N ""
 - 开启 Cloudflare 账户 MFA，定期审查 Access 策略、WAF 与限流规则，并限制部署 API Token 权限。
 - 监控 Worker、Durable Objects 和网络使用量。每个活动终端都会占用 Durable Object 与出站 TCP 连接，费用和限制以 Cloudflare 当前套餐为准。
 - 更新前执行 `npm run check`，保留已经发布的 Durable Object migrations，并在低峰期部署。
-- 不要在 URL、Issue、日志、截图或分享链接中放入密码、私钥或一次性票据。
+- 不要在 Issue、日志或截图中放入密码、私钥或一次性票据。分享链接按钮生成的 URL 默认携带 Base64 密码，仅发送给可信对象，使用后从浏览器历史记录中删除。
 
 ## 许可证
 
