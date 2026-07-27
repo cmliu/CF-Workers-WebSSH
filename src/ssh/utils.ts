@@ -73,22 +73,3 @@ export function x25519SecretToSSHMPInt(bytes: Uint8Array): Uint8Array {
   if (bytes.length !== 32) throw new Error(`X25519 shared secret must be 32 bytes, got ${bytes.length}`);
   return toSSHMPInt(bytes);
 }
-
-export function extractRawECDHPoint(blob: Uint8Array): Uint8Array {
-  let offset = 0;
-
-  const keyTypeLen = readUint32(blob, offset);
-  offset += 4 + keyTypeLen;
-
-  const curveLen = readUint32(blob, offset);
-  offset += 4 + curveLen;
-
-  const pointLen = readUint32(blob, offset);
-  offset += 4;
-
-  return blob.subarray(offset, offset + pointLen);
-}
-
-export function encodePrefixedString(str: string): Uint8Array {
-  return encodeString(str);
-}

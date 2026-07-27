@@ -191,9 +191,3 @@ export class SSHHMAC {
     return crypto.subtle.verify('HMAC', this.key, toBufferSource(expected), toBufferSource(buildMacData(seqNum, packet)));
   }
 }
-
-export const REKEY_THRESHOLD = 1 << 30;
-
-export function shouldRekey(seqNum: number): boolean {
-  return seqNum >= REKEY_THRESHOLD;
-}

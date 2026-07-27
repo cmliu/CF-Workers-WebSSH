@@ -45,7 +45,6 @@ export class SSHAuth {
     privateKeyPEM: string,
     sessionID: Uint8Array,
     serverSigAlgs?: string[],
-    allowLegacyRsaSha1: boolean = false,
   ): Promise<Uint8Array> {
     const { signingKey, publicKeyBlob, keyType, rsaPkcs8 } = await this.parsePrivateKey(privateKeyPEM);
 
@@ -53,7 +52,7 @@ export class SSHAuth {
     let signatureAlgo = keyType;
 
     if (keyType === SSH_RSA) {
-      const chosen = this.selectRsaSigAlgorithm(serverSigAlgs, allowLegacyRsaSha1);
+      const chosen = this.selectRsaSigAlgorithm(serverSigAlgs);
       requestAlgo = chosen;
       signatureAlgo = chosen;
     }
@@ -83,9 +82,7 @@ export class SSHAuth {
         encodeString(rawSignature),
       );
     } else if (keyType === SSH_RSA) {
-      const hash = signatureAlgo === 'rsa-sha2-512' ? 'SHA-512'
-                 : signatureAlgo === 'ssh-rsa'        ? 'SHA-1'
-                 : 'SHA-256';
+      const hash = signatureAlgo === 'rsa-sha2-512' ? 'SHA-512' : 'SHA-256';
       let sigKey = signingKey;
       if (hash !== 'SHA-256' && rsaPkcs8) {
         sigKey = await crypto.subtle.importKey(
@@ -122,11 +119,8 @@ export class SSHAuth {
   }
   private static selectRsaSigAlgorithm(
     serverSigAlgs: string[] | undefined,
-    allowLegacyRsaSha1: boolean,
   ): string {
-    const localOrder = allowLegacyRsaSha1
-      ? ['rsa-sha2-512', 'rsa-sha2-256', 'ssh-rsa']
-      : ['rsa-sha2-512', 'rsa-sha2-256'];
+    const localOrder = ['rsa-sha2-512', 'rsa-sha2-256'];
 
     if (!serverSigAlgs || serverSigAlgs.length === 0) {
       return 'rsa-sha2-256';

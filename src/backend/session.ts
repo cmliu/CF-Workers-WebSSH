@@ -198,7 +198,7 @@ export class SSHSession {
         const line = this.decoder.decode(bytes).replace(/\r?\n$/, '');
         if (!line.startsWith('SSH-')) continue;
         if (!isSSH2Identification(line)) throw new Error('The server does not support SSH 2.0');
-        this.transport.handleVersionExchange(`${line}\r\n`);
+        this.transport.setRemoteVersion(line);
         const remaining = this.versionBuffer.subarray(start);
         this.versionBuffer = new Uint8Array();
         this.phase = 'kex';
@@ -474,7 +474,7 @@ export class SSHSession {
       if (service.next !== payload.length || service.value !== 'ssh-userauth') throw new Error('Invalid SSH user authentication service acceptance');
       if (this.authRequestSent) throw new Error('Duplicate SSH user authentication service acceptance');
       const request = this.config.authMethod === 'publickey'
-        ? await SSHAuth.buildPublicKeyAuthRequest(this.config.username, this.config.privateKey!, this.sessionId!, this.serverSigAlgs, false)
+        ? await SSHAuth.buildPublicKeyAuthRequest(this.config.username, this.config.privateKey!, this.sessionId!, this.serverSigAlgs)
         : SSHAuth.buildPasswordAuthRequest(this.config.username, this.config.password!);
       this.authRequestSent = true;
       this.config.password = undefined;

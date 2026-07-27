@@ -61,8 +61,3 @@ export function getMacSpec(algorithm: string): MacSpec {
   if (!spec) throw new Error(`Unsupported MAC algorithm: ${algorithm}`);
   return spec;
 }
-
-export function getMacAlgorithmsForCipher(cipher: string): string[] {
-  if (getCipherSpec(cipher).aead) return ['none'];
-  return SUPPORTED_MAC_ALGORITHMS;
-}

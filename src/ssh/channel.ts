@@ -11,8 +11,6 @@ import { encodeString, readUint32, writeUint32 } from './utils';
 const SESSION_FIELD = encodeString('session');
 const PTY_REQ_FIELD = encodeString('pty-req');
 const SHELL_FIELD = encodeString('shell');
-const SUBSYSTEM_FIELD = encodeString('subsystem');
-const EXEC_FIELD = encodeString('exec');
 const WINDOW_CHANGE_FIELD = encodeString('window-change');
 const EMPTY_TERMINAL_MODES_FIELD = encodeString(new Uint8Array([0]));
 const UINT32_MAX = 0xffffffff;
@@ -38,19 +36,10 @@ export class SSHChannel {
   private remoteWindowSize: number = 0;
   private remoteMaxPacketSize: number = DEFAULT_MAX_PACKET_SIZE;
   private consumedSinceWindowAdjust: number = 0;
-  private eofSent: boolean = false;
   private eofReceived: boolean = false;
   private closeSent: boolean = false;
   private closeReceived: boolean = false;
   private openConfirmed: boolean = false;
-
-  getLocalChannelID(): number {
-    return this.localChannelID;
-  }
-
-  getRemoteChannelID(): number {
-    return this.remoteChannelID;
-  }
 
   isClosed(): boolean {
     return this.closeSent && this.closeReceived;
@@ -138,41 +127,6 @@ export class SSHChannel {
     offset += 4;
     offset = writeBytes(payload, offset, SHELL_FIELD);
     payload[offset] = 0x01;
-    return payload;
-  }
-
-  buildSubsystemRequest(subsystem: string): Uint8Array {
-    const name = encodeString(subsystem);
-    const payload = new Uint8Array(1 + 4 + SUBSYSTEM_FIELD.length + 1 + name.length);
-    let offset = 0;
-    payload[offset++] = SSH_MSG_CHANNEL_REQUEST;
-    writeUint32(payload, offset, this.remoteChannelID);
-    offset += 4;
-    offset = writeBytes(payload, offset, SUBSYSTEM_FIELD);
-    payload[offset++] = 0x01; // want_reply = true
-    writeBytes(payload, offset, name);
-    return payload;
-  }
-
-  buildExecRequest(command: string): Uint8Array {
-    const cmdBytes = encodeString(command);
-    const payload = new Uint8Array(1 + 4 + EXEC_FIELD.length + 1 + cmdBytes.length);
-    let offset = 0;
-    payload[offset++] = SSH_MSG_CHANNEL_REQUEST;
-    writeUint32(payload, offset, this.remoteChannelID);
-    offset += 4;
-    offset = writeBytes(payload, offset, EXEC_FIELD);
-    payload[offset++] = 0x01; // want_reply = true
-    writeBytes(payload, offset, cmdBytes);
-    return payload;
-  }
-
-  buildEof(): Uint8Array {
-    if (this.eofSent || this.closeSent) throw new Error('Channel EOF was already sent');
-    this.eofSent = true;
-    const payload = new Uint8Array(5);
-    payload[0] = SSH_MSG_CHANNEL_EOF;
-    writeUint32(payload, 1, this.remoteChannelID);
     return payload;
   }
 
