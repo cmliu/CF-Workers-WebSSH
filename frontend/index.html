@@ -102,31 +102,16 @@
 
           <section class="profiles-section" aria-labelledby="profiles-title">
             <div class="section-title-row">
-              <h2 id="profiles-title" data-i18n-zh="已保存目标" data-i18n-en="Saved targets">已保存目标</h2>
+              <h2 id="profiles-title" data-i18n-zh="历史记录" data-i18n-en="History">历史记录</h2>
               <span id="profile-count" class="count-badge">0</span>
             </div>
             <div id="profile-list" class="profile-list">
-              <p class="empty-list" data-i18n-zh="暂无已保存目标" data-i18n-en="No saved targets yet.">暂无已保存目标</p>
+              <p class="empty-list" data-i18n-zh="暂无历史记录" data-i18n-en="No connection history yet.">暂无历史记录</p>
             </div>
           </section>
 
           <form id="connection-form" class="connection-form" autocomplete="off" novalidate>
             <input id="profile-id" type="hidden" />
-            <div class="field-grid single">
-              <label class="field">
-                <span data-i18n-zh="连接名称" data-i18n-en="Profile name">连接名称</span>
-                <input
-                  id="profile-name"
-                  name="profileName"
-                  type="text"
-                  maxlength="253"
-                  placeholder="生产环境"
-                  data-i18n-placeholder-zh="生产环境"
-                  data-i18n-placeholder-en="Production"
-                />
-              </label>
-            </div>
-
             <div class="field-grid host-grid">
               <label class="field">
                 <span data-i18n-zh="主机" data-i18n-en="Host">主机</span>
@@ -161,7 +146,7 @@
               <div id="password-field" class="field secret-field">
                 <label for="password">
                   <span data-i18n-zh="密码" data-i18n-en="Password">密码</span>
-                  <small data-i18n-zh="保存配置时使用 Base64 编码" data-i18n-en="Base64-encoded when profile is saved">保存配置时使用 Base64 编码</small>
+                  <small data-i18n-zh="连接成功后以 Base64 保存" data-i18n-en="Saved as Base64 after a successful connection">连接成功后以 Base64 保存</small>
                 </label>
                 <span class="input-action-wrap">
                   <input id="password" name="password" type="password" maxlength="4096" autocomplete="current-password" />
@@ -226,13 +211,6 @@
                     spellcheck="false"
                   />
                 </label>
-                <label class="field">
-                  <span>
-                    <span data-i18n-zh="网关访问令牌" data-i18n-en="Gateway access token">网关访问令牌</span>
-                    <small data-i18n-zh="可选且永不存储" data-i18n-en="optional, never stored">可选且永不存储</small>
-                  </span>
-                  <input id="access-token" name="accessToken" type="password" maxlength="4096" autocomplete="off" />
-                </label>
               </div>
             </details>
 
@@ -242,7 +220,6 @@
                 <span class="button-icon" aria-hidden="true">&gt;_</span>
                 <span>连接</span>
               </button>
-              <button id="save-profile" class="secondary-button" type="button" data-i18n-zh="保存" data-i18n-en="Save">保存</button>
               <button
                 id="share-link"
                 class="icon-button bordered"
@@ -258,9 +235,9 @@
 
           <p
             class="privacy-note"
-            data-i18n-zh="保存配置时，密码会以可逆的 Base64 编码保存在此浏览器；私钥和网关令牌不会保存。"
-            data-i18n-en="Saved profiles store passwords in reversible Base64 in this browser; private keys and gateway tokens are not saved."
-          >保存配置时，密码会以可逆的 Base64 编码保存在此浏览器；私钥和网关令牌不会保存。</p>
+            data-i18n-zh="连接成功后会自动加入此浏览器的历史记录；密码以可逆的 Base64 编码保存，私钥不会保存。"
+            data-i18n-en="Successful connections are added to this browser's history automatically; passwords use reversible Base64, while private keys are not saved."
+          >连接成功后会自动加入此浏览器的历史记录；密码以可逆的 Base64 编码保存，私钥不会保存。</p>
         </aside>
 
         <main class="workspace">

@@ -5,7 +5,7 @@
 项目不依赖额外的 WebSSH 后端、容器或常驻服务器；前端、会话网关、SSH 客户端实现和静态资源均由同一个 Worker 部署提供。
 
 > [!IMPORTANT]
-> 这是一个 SSH 访问网关。部署者能够控制 Worker 代码和运行时配置，请只使用自己信任的部署。生产环境务必设置 `ACCESS_TOKEN` 或使用等效的 Cloudflare Access 保护，不要直接开放匿名访问。
+> 这是一个 SSH 访问网关。项目始终允许匿名创建网关会话，不提供内置的访问令牌或用户身份认证。公网部署前务必使用 Cloudflare Access、WAF 与限流策略保护页面和 API，并关闭不需要的 `workers.dev` 公网入口。
 
 ## 功能特性
 
@@ -13,7 +13,8 @@
 - 基于 xterm.js 的响应式终端，支持桌面端和移动端、自动缩放、全屏和会话日志。
 - 支持密码认证，以及 Ed25519、RSA、ECDSA 的未加密 OpenSSH 私钥认证。
 - 首次连接时暂停认证并显示主机 SHA-256 指纹，确认后才会发送 SSH 凭据。
-- 可在浏览器本地保存连接配置、Base64 编码的密码和主机指纹，但不保存私钥或网关令牌。
+- SSH 连接成功后自动写入浏览器本地“历史记录”；条目统一以 `用户名@主机:端口` 命名，第二行显示最后连接时间。
+- 历史记录可恢复连接配置、Base64 编码的密码和主机指纹，但不保存私钥。
 - 支持 UTF-8、GB18030、Big5 显示编码、初始命令和无凭据分享链接。
 - 提供一次性会话票据、同源检查、HTTPS 强制、安全响应头和公网目标校验。
 - 运行时无 SSH 第三方依赖，SSH 数据包、密钥交换、加密、认证和通道逻辑均使用 TypeScript 与 Web Crypto 实现。
@@ -26,7 +27,7 @@
     │  WSS：终端输入、输出和控制消息
     ▼
 Cloudflare Worker
-    │  同源检查、ACCESS_TOKEN 校验、静态资源
+    │  同源检查、会话票据、静态资源
     ▼
 每会话 Durable Object
     │  消耗一次性票据、校验目标地址、运行 SSH 2.0 客户端
@@ -37,13 +38,13 @@ Cloudflare Worker
 
 一次连接的主要流程如下：
 
-1. 浏览器向 `POST /api/session` 提交网关访问令牌。
+1. 浏览器向 `POST /api/session` 匿名申请一次性会话票据。
 2. Worker 创建独立 Durable Object，并签发一个有效期 60 秒、绑定客户端地址且只能使用一次的票据。
 3. 浏览器携带票据连接 `GET /api/ssh` WebSocket；Durable Object 消耗票据。
 4. Worker 解析目标域名，通过 Cloudflare DNS over HTTPS 获取 A/AAAA 记录，拒绝私有、保留或本地地址。
 5. Durable Object 只连接已经通过校验的 IP，避免 DNS 重绑定，然后在该 TCP 连接上执行 SSH 协议。
 6. 主机密钥签名验证成功后，浏览器确认或比对固定指纹；只有通过后才发送用户认证数据。
-7. 认证成功后建立 PTY 和交互式 Shell，浏览器与 SSH 通道之间开始转发终端数据。
+7. 认证成功后建立 PTY 和交互式 Shell，浏览器与 SSH 通道之间开始转发终端数据，并将该目标更新到浏览器历史记录。
 
 ## 支持范围
 
@@ -71,13 +72,12 @@ Cloudflare Worker
 
 ### 已实现的保护
 
-- 默认关闭：未配置 `ACCESS_TOKEN` 且 `ALLOW_ANONYMOUS` 不为 `true` 时，会话接口返回 `503`。
-- `ACCESS_TOKEN` 使用恒定时间比较；一次性票据使用随机密钥和 HMAC-SHA256 签名。
+- 一次性票据使用随机密钥和 HMAC-SHA256 签名；会话申请始终匿名，票据本身不代表用户身份认证。
 - 会话票据绑定请求端 IP、60 秒过期并在第一次使用尝试时立即销毁，降低重放风险。
 - API 和 WebSocket 必须来自页面同源 `Origin`；Cloudflare 边缘上的 HTTP API 请求会被拒绝，页面请求会重定向至 HTTPS。
 - 域名解析后逐个检查公网地址，并直接连接已验证 IP，以限制 SSRF 与 DNS 重绑定。
 - SSH 主机密钥会验证交换签名并计算 `SHA256:` 指纹；没有固定指纹时，认证会暂停等待用户确认。
-- 保存连接配置时，密码会以可逆的 Base64 编码写入浏览器 Local Storage；这不是加密，能访问该站点本地存储的代码可以还原密码。私钥和网关令牌不会写入 Local Storage，任何凭据都不会写入 Durable Object 存储。连接表单在发起授权后立即清空，Worker 在生成认证请求后释放凭据引用。
+- SSH 连接成功后，连接配置会自动写入浏览器 Local Storage 的“历史记录”。密码以可逆的 Base64 编码保存，这不是加密，能访问该站点本地存储的代码可以还原密码；私钥不会写入 Local Storage，任何 SSH 凭据都不会写入 Durable Object 存储。凭据输入框在发起授权后立即清空，Worker 在生成认证请求后释放凭据引用。
 - 响应设置 CSP、HSTS、`X-Frame-Options`、`X-Content-Type-Options` 等安全头。
 
 ### 信任边界
@@ -89,6 +89,16 @@ Cloudflare Worker
 ```bash
 sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256
 ```
+
+## 历史记录
+
+页面不提供单独的“保存”按钮。只有 SSH 连接成功后，目标才会自动新增或更新到当前浏览器的“历史记录”：
+
+- 名称固定为 `用户名@主机:端口`，例如 `root@ssh.example.com:22`，不再填写自定义连接名称。
+- 每个条目的第二行只显示最后连接时间；再次成功连接同一条目时会更新时间。
+- 点击历史条目会恢复主机、端口、用户名、认证方式和其他已保存选项，便于随时重新连接。
+- 密码以可逆的 Base64 形式保存在当前站点的 Local Storage 中；私钥始终不保存，使用私钥认证时需要重新选择或粘贴。
+- 历史记录属于当前浏览器和当前站点来源；清除站点数据、使用隐私浏览窗口或更换域名后无法读取原有记录。
 
 ## 部署教程：Wrangler CLI（推荐）
 
@@ -144,7 +154,6 @@ not_found_handling = "single-page-application"
 run_worker_first = true
 
 [vars]
-ALLOW_ANONYMOUS = "false"
 CONNECT_TIMEOUT_MS = "10000"
 ```
 
@@ -179,33 +188,9 @@ npm run deploy
 https://cf-workers-webssh.<your-subdomain>.workers.dev
 ```
 
-此时尚未设置 `ACCESS_TOKEN`，因此页面和健康接口可以访问，但默认 `ALLOW_ANONYMOUS = "false"` 会阻止创建 SSH 会话。这是安全的初始状态。
+部署完成后，页面和会话接口都可以直接访问。项目不会要求配置网关令牌；在公开地址验证 SSH 连接前，请先按后文配置 Cloudflare Access、WAF 与限流规则。
 
-### 7. 设置网关访问令牌
-
-先生成一个足够长的随机值。下面的命令适用于 Node.js：
-
-```bash
-node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'))"
-```
-
-然后以 Cloudflare Secret 方式保存，按提示粘贴刚生成的值：
-
-```bash
-npx wrangler secret put ACCESS_TOKEN
-```
-
-Wrangler 会为已部署的 Worker 创建并激活包含该 Secret 的新版本。Secret 不会出现在 `wrangler.toml` 或构建产物中。此后每次在页面连接时，需要在“高级选项 / Advanced options”的“网关访问令牌”中输入同一个值。
-
-如需轮换令牌，重新运行 `npx wrangler secret put ACCESS_TOKEN` 即可。删除令牌使用：
-
-```bash
-npx wrangler secret delete ACCESS_TOKEN
-```
-
-删除后，在默认 `ALLOW_ANONYMOUS = "false"` 配置下网关会安全地停止签发会话票据。
-
-### 8. 验证部署
+### 7. 验证部署
 
 先检查健康接口：
 
@@ -223,11 +208,10 @@ curl https://cf-workers-webssh.<your-subdomain>.workers.dev/api/health
 
 1. 输入 SSH 公网主机、端口和用户名。
 2. 选择密码或 SSH 密钥认证并输入凭据。
-3. 展开“高级选项”，输入 `ACCESS_TOKEN`。
-4. 点击“连接”。第一次连接时，通过可信渠道核对页面显示的 SHA-256 主机指纹。
-5. 确认后进入交互式 Shell。若勾选记住指纹，后续连接会在当前浏览器中自动固定并比对。
+3. 点击“连接”。第一次连接时，通过可信渠道核对页面显示的 SHA-256 主机指纹。
+4. 确认后进入交互式 Shell；连接成功的目标会自动进入“历史记录”。若勾选记住指纹，后续连接会在当前浏览器中自动固定并比对。
 
-### 9. 更新部署
+### 8. 更新部署
 
 ```bash
 git pull --ff-only
@@ -242,25 +226,15 @@ npm run deploy
 
 | 名称 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `ACCESS_TOKEN` | Secret | 未设置 | 推荐的网关访问令牌。只要设置了它，每次创建会话都必须提交正确令牌。 |
-| `ALLOW_ANONYMOUS` | Variable | `"false"` | 仅在没有 `ACCESS_TOKEN` 时生效；只有精确设置为字符串 `"true"` 才允许匿名创建会话。 |
 | `CONNECT_TIMEOUT_MS` | Variable | `"10000"` | 每个已验证目标 IP 的 TCP 建连超时，运行时会限制在 2000 到 30000 ms。 |
 | `SSH_SESSIONS` | Durable Object binding | 已配置 | 每个连接独立的会话对象。不要改名，除非同时修改代码与 migration。 |
 | `ASSETS` | Workers Assets binding | 已配置 | 将 `dist/` 静态资源交给 Worker 提供。 |
 
-普通变量可以编辑 `wrangler.toml` 后重新部署。敏感值必须使用 `wrangler secret` 或 Cloudflare Dashboard 的加密 Secret，不要放进 `[vars]`。
+普通变量可以编辑 `wrangler.toml` 后重新部署。会话创建始终匿名，不存在用于开启、关闭或保护会话创建的项目变量。公开网关可能被滥用、产生费用或导致 Cloudflare 账户受限，应在 Cloudflare 边缘配置身份访问策略、WAF、限流和使用监控。
 
-### 匿名模式（不推荐用于公网）
+### 从旧版本升级
 
-如果明确接受任何访问者都能借助你的 Worker 发起公网 SSH TCP 连接，可以删除 `ACCESS_TOKEN` 并修改：
-
-```toml
-[vars]
-ALLOW_ANONYMOUS = "true"
-CONNECT_TIMEOUT_MS = "10000"
-```
-
-随后重新运行 `npm run deploy`。公开网关可能被滥用、产生费用或导致 Cloudflare 账户被限制；至少应配合 Cloudflare Access、限流策略和使用监控。
+旧版本部署中可能仍残留已废弃的网关访问 Secret 或匿名开关。新版本会忽略这些值，它们不会继续提供访问保护；请在 Worker 的 `Settings` -> `Variables and Secrets` 中手动清理对应的旧 Secret 和变量，避免产生仍受保护的错误判断。升级并开放流量前，先确认 Cloudflare Access、WAF、限流规则及所有可访问域名均已正确配置。
 
 ## 自定义域名与 Cloudflare Access
 
@@ -296,12 +270,13 @@ workers_dev = false
 
 可在 Cloudflare Zero Trust 中为 `ssh.example.com` 创建 Self-hosted Application，并配置只允许指定用户、邮箱域或身份提供商访问。WebSocket 使用同一站点的 Access 会话，适合保护整个 WebSSH 页面和 API。
 
-建议采用纵深防御：Cloudflare Access 与 `ACCESS_TOKEN` 同时开启。如果选择只依赖 Access：
+本项目自身不提供身份认证，建议采用以下纵深防御：
 
 - 确保所有可访问域名都受 Access 保护。
 - 设置 `workers_dev = false`，避免公开的 `workers.dev` 地址绕过自定义域名策略。
-- 删除 `ACCESS_TOKEN` 后才需要设置 `ALLOW_ANONYMOUS = "true"`，否则项目自身仍会拒绝签发会话。
-- 不要仅在前端隐藏令牌输入框；真正的访问控制必须位于 Cloudflare Access 或 Worker 服务端。
+- 使用 WAF 规则限制异常请求、已知恶意来源和不需要的访问区域。
+- 对会话申请与 WebSocket 建连路径配置限流，并结合 Worker、Durable Objects 和网络使用量监控设置告警。
+- 验证 Access 策略同时覆盖页面、`/api/session` 与 `/api/ssh`；同源检查和一次性票据不能替代用户身份认证。
 
 ## 通过 Cloudflare Git 集成部署
 
@@ -312,10 +287,10 @@ workers_dev = false
 3. 项目根目录使用 `/`，Node.js 版本选择 22 或更高。
 4. Build command 留空；`wrangler.toml` 中的 `[build]` 会自动执行 `npm run build:web`。
 5. Deploy command 设置为 `npx wrangler deploy` 或 `npm run deploy`，两者都会通过同一个 Wrangler 构建钩子生成前端资源。
-6. 首次部署完成后，在 Worker 的 `Settings` -> `Variables and Secrets` 中新增加密 Secret：`ACCESS_TOKEN`。
-7. 再次触发部署，并按前文方式检查 `/api/health` 与实际 SSH 连接。
+6. 首次部署完成后，配置 Cloudflare Access、WAF、限流规则，并确认没有不受保护的公开域名。
+7. 按前文方式检查 `/api/health` 与实际 SSH 连接。
 
-Dashboard 的菜单名称可能随 Cloudflare UI 更新而略有变化。关键点是：`wrangler.toml` 必须参与部署，其 `[build]` 配置会在 Wrangler 读取 `dist/` 前生成前端资源；`ACCESS_TOKEN` 必须是运行时 Secret 而不是公开构建变量。
+Dashboard 的菜单名称可能随 Cloudflare UI 更新而略有变化。关键点是：`wrangler.toml` 必须参与部署，其 `[build]` 配置会在 Wrangler 读取 `dist/` 前生成前端资源；访问控制必须配置在 Cloudflare 边缘并覆盖所有公开入口。
 
 ## 本地开发
 
@@ -338,12 +313,10 @@ Copy-Item .env.example .dev.vars
 编辑 `.dev.vars`：
 
 ```dotenv
-ACCESS_TOKEN=replace-with-a-long-random-value
-ALLOW_ANONYMOUS=false
 CONNECT_TIMEOUT_MS=10000
 ```
 
-`.dev.vars` 已被 `.gitignore` 忽略。不要提交真实令牌、SSH 密码或私钥。
+`.dev.vars` 已被 `.gitignore` 忽略。不要提交 SSH 密码、私钥或其他真实凭据。
 
 ### 启动完整本地环境
 
@@ -398,7 +371,7 @@ npm run dev:web
 ├── src/
 │   ├── backend/
 │   │   ├── durable-object.ts  # 会话票据、TCP Socket 与会话生命周期
-│   │   ├── security.ts        # Token、票据、同源与公网目标校验
+│   │   ├── security.ts        # 票据、同源与公网目标校验
 │   │   └── session.ts         # SSH 状态机与浏览器消息桥接
 │   ├── ssh/                   # SSH 协议、KEX、密码学、认证与通道实现
 │   ├── http-security.ts       # HTTPS 与安全响应头
@@ -418,20 +391,16 @@ npm run dev:web
 | 接口 | 方法 | 用途 |
 | --- | --- | --- |
 | `/api/health` | `GET` | 返回 Worker 与 SSH 功能健康状态 |
-| `/api/session` | `POST` | 校验 `ACCESS_TOKEN` 并创建一次性会话票据 |
+| `/api/session` | `POST` | 匿名创建一次性会话票据 |
 | `/api/ssh?ticket=...&session=...` | `GET` + WebSocket Upgrade | 进入对应 Durable Object 并建立 SSH 会话 |
 
-`/api/session` 和 `/api/ssh` 都要求请求 `Origin` 与 Worker URL 同源。票据包含敏感授权能力且只能短时使用，不应记录、复用或转发。
+`/api/session` 和 `/api/ssh` 都要求请求 `Origin` 与 Worker URL 同源。票据包含敏感授权能力且只能短时使用，不应记录、复用或转发。同源检查只限制浏览器请求来源，不验证用户身份；公网访问控制应由 Cloudflare Access、WAF 和限流策略提供。
 
 ## 常见问题
 
-### `503 Gateway access is not configured`
+### 为什么任何访问者都能申请会话票据
 
-没有配置 `ACCESS_TOKEN`，且 `ALLOW_ANONYMOUS` 不是 `"true"`。生产环境运行 `npx wrangler secret put ACCESS_TOKEN`；本地开发则检查 `.dev.vars`。
-
-### `401 Invalid access token`
-
-页面输入的网关令牌与 Worker Secret 不一致。重新输入，或使用 `npx wrangler secret put ACCESS_TOKEN` 轮换。连接发起后令牌输入框会被清空，这是预期行为。
+这是项目的预期行为：会话创建始终匿名，一次性票据仅用于把短时请求安全地交给对应 Durable Object，不承担用户身份认证。公网部署必须使用 Cloudflare Access 限制访问者，并配合 WAF、限流和监控降低扫描、滥用与费用风险。
 
 ### `403 Invalid request origin` / `Invalid WebSocket origin`
 
@@ -480,12 +449,12 @@ ssh-keygen -t ed25519 -f webssh_ed25519 -N ""
 
 ## 运维建议
 
-- 使用 Cloudflare Access 和 `ACCESS_TOKEN` 双重保护，关闭不需要的 `workers.dev` 公网入口。
+- 使用 Cloudflare Access 保护所有公开域名，配置 WAF 与会话接口限流，并关闭不需要的 `workers.dev` 公网入口。
 - 为 WebSSH 创建独立、低权限 SSH 账户和密钥；敏感运维使用 `sudo` 审计与最小授权。
-- 定期轮换 `ACCESS_TOKEN`，开启 Cloudflare 账户 MFA，并限制部署 API Token 权限。
+- 开启 Cloudflare 账户 MFA，定期审查 Access 策略、WAF 与限流规则，并限制部署 API Token 权限。
 - 监控 Worker、Durable Objects 和网络使用量。每个活动终端都会占用 Durable Object 与出站 TCP 连接，费用和限制以 Cloudflare 当前套餐为准。
 - 更新前执行 `npm run check`，保留已经发布的 Durable Object migrations，并在低峰期部署。
-- 不要在 URL、Issue、日志、截图或分享链接中放入密码、私钥、网关令牌或一次性票据。
+- 不要在 URL、Issue、日志、截图或分享链接中放入密码、私钥或一次性票据。
 
 ## 许可证
 

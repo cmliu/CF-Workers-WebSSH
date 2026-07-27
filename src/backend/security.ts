@@ -22,15 +22,6 @@ function fromBase64Url(value: string): Uint8Array {
   return Uint8Array.from(binary, (char) => char.charCodeAt(0));
 }
 
-export function constantTimeEqual(left: string, right: string): boolean {
-  const a = encoder.encode(left);
-  const b = encoder.encode(right);
-  const length = Math.max(a.length, b.length);
-  let difference = a.length ^ b.length;
-  for (let index = 0; index < length; index++) difference |= (a[index] ?? 0) ^ (b[index] ?? 0);
-  return difference === 0;
-}
-
 export async function createTicket(secret: Uint8Array, ip: string): Promise<{ ticket: string; expiresAt: number }> {
   const expiresAt = Date.now() + TICKET_TTL_MS;
   const payload: TicketPayload = { exp: expiresAt, nonce: crypto.randomUUID(), ip };

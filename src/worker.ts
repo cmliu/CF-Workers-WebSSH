@@ -1,6 +1,6 @@
 import type { Env } from './types';
 import { SSHSessionDO } from './backend/durable-object';
-import { constantTimeEqual, isSameOrigin } from './backend/security';
+import { isSameOrigin } from './backend/security';
 import { httpsRedirect, isProductionHttp, jsonError, secureResponse } from './http-security';
 
 export { SSHSessionDO };
@@ -23,13 +23,7 @@ async function sessionTicket(request: Request, env: Env): Promise<Response> {
   } catch { return jsonError('Invalid JSON body', 400); }
   if (!body || typeof body !== 'object' || Array.isArray(body)) return jsonError('Invalid JSON body', 400);
   const fields = Object.keys(body as Record<string, unknown>);
-  if (fields.some((field) => field !== 'accessToken')) return jsonError('Unsupported request field', 400);
-  if (!env.ACCESS_TOKEN && env.ALLOW_ANONYMOUS !== 'true') {
-    return jsonError('Gateway access is not configured', 503);
-  }
-  const supplied = (body as Record<string, unknown>).accessToken;
-  if (typeof supplied === 'string' && supplied.length > 4096) return jsonError('Access token is too large', 413);
-  if (env.ACCESS_TOKEN && (typeof supplied !== 'string' || !constantTimeEqual(supplied, env.ACCESS_TOKEN))) return jsonError('Invalid access token', 401);
+  if (fields.length > 0) return jsonError('Unsupported request field', 400);
   const id = env.SSH_SESSIONS.newUniqueId();
   const stub = env.SSH_SESSIONS.get(id);
   const response = await stub.fetch(new Request('https://session.internal/ticket', {

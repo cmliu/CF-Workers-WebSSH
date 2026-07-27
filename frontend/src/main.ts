@@ -1,6 +1,7 @@
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
+import { historyKey, historyLabel, normalizeHistory, upsertHistory, type HistoryEntry } from './history';
 import './style.css';
 
 type AuthMethod = 'password' | 'publickey';
@@ -13,20 +14,7 @@ interface LocalizedMessage {
   en: string;
 }
 
-interface SavedProfile {
-  id: string;
-  name: string;
-  host: string;
-  port: number;
-  username: string;
-  authMethod: AuthMethod;
-  passwordBase64?: string;
-  initialCommand: string;
-  termType: string;
-  encoding: string;
-  fingerprint: string;
-  updatedAt: number;
-}
+type SavedProfile = HistoryEntry;
 
 interface ConnectionConfig {
   type: 'connect';
@@ -89,7 +77,6 @@ const PROFILE_STORAGE_KEY = 'workers-webssh.profiles.v1';
 const HOST_KEY_STORAGE_KEY = 'workers-webssh.hostkeys.v1';
 const THEME_STORAGE_KEY = 'workers-webssh.theme';
 const LANGUAGE_STORAGE_KEY = 'workers-webssh.language';
-const MAX_PROFILES = 30;
 const MAX_KEY_BYTES = 65_536;
 const MAX_PASSWORD_BASE64_LENGTH = 16_384;
 const PING_INTERVAL_MS = 25_000;
@@ -184,8 +171,6 @@ const SERVER_EVENT_MESSAGES: Record<string, Translation> = {
 const SERVER_MESSAGE_TRANSLATIONS: Record<string, string> = {
   'Invalid request origin': '请求来源无效',
   'Expected application/json': '请求必须使用 application/json',
-  'Invalid access token': '访问令牌无效',
-  'Gateway access is not configured': '网关访问尚未配置',
   'Unable to create a session ticket': '无法创建会话票据',
   'Invalid SSH host': 'SSH 主机无效',
   'Invalid SSH port': 'SSH 端口无效',
@@ -236,7 +221,6 @@ const ui = {
   profileCount: element<HTMLElement>('profile-count'),
   form: element<HTMLFormElement>('connection-form'),
   profileId: element<HTMLInputElement>('profile-id'),
-  profileName: element<HTMLInputElement>('profile-name'),
   host: element<HTMLInputElement>('host'),
   port: element<HTMLInputElement>('port'),
   username: element<HTMLInputElement>('username'),
@@ -251,10 +235,8 @@ const ui = {
   termType: element<HTMLSelectElement>('term-type'),
   encoding: element<HTMLSelectElement>('encoding'),
   fingerprint: element<HTMLInputElement>('fingerprint'),
-  accessToken: element<HTMLInputElement>('access-token'),
   formError: element<HTMLElement>('form-error'),
   connect: element<HTMLButtonElement>('connect-button'),
-  saveProfile: element<HTMLButtonElement>('save-profile'),
   shareLink: element<HTMLButtonElement>('share-link'),
   globalStatus: element<HTMLElement>('global-status'),
   globalStatusLabel: element<HTMLElement>('global-status-label'),
@@ -361,6 +343,7 @@ let currentSessionSubtitle: LocalizedMessage = { zh: '选择目标并连接', en
 let currentEventMessage: LocalizedMessage = { zh: 'Worker 运行时待命', en: 'Worker runtime standing by' };
 let currentFormError: LocalizedMessage | null = null;
 let passwordDirty = false;
+let pendingHistory: { generation: number; profile: SavedProfile } | null = null;
 
 const terminal = new Terminal({
   allowProposedApi: false,
@@ -411,8 +394,6 @@ function isSavedProfile(value: unknown): value is SavedProfile {
   const item = value as Partial<SavedProfile>;
   return (
     typeof item.id === 'string' &&
-    typeof item.name === 'string' &&
-    item.name.length >= 1 && item.name.length <= 253 &&
     typeof item.host === 'string' &&
     item.host.length >= 1 && item.host.length <= 253 && !/[\s/?#]/.test(item.host) &&
     typeof item.port === 'number' &&
@@ -435,7 +416,10 @@ function isSavedProfile(value: unknown): value is SavedProfile {
     ['utf-8', 'gb18030', 'big5'].includes(item.encoding) &&
     typeof item.fingerprint === 'string' &&
     (item.fingerprint === '' || /^SHA256:[A-Za-z0-9+/]{43}$/.test(item.fingerprint)) &&
-    typeof item.updatedAt === 'number'
+    typeof item.updatedAt === 'number' &&
+    Number.isFinite(item.updatedAt) &&
+    item.updatedAt >= 0 &&
+    item.updatedAt <= 8_640_000_000_000_000
   );
 }
 
@@ -443,7 +427,6 @@ function sanitizeSavedProfile(value: unknown): SavedProfile | null {
   if (!isSavedProfile(value)) return null;
   const profile: SavedProfile = {
     id: value.id,
-    name: value.name,
     host: value.host,
     port: value.port,
     username: value.username,
@@ -469,9 +452,11 @@ function sanitizeSavedProfile(value: unknown): SavedProfile | null {
 function loadProfiles(): SavedProfile[] {
   try {
     const parsed: unknown = JSON.parse(localStorage.getItem(PROFILE_STORAGE_KEY) ?? '[]');
-    return Array.isArray(parsed)
-      ? parsed.map(sanitizeSavedProfile).filter((profile): profile is SavedProfile => profile !== null).slice(0, MAX_PROFILES)
-      : [];
+    if (!Array.isArray(parsed)) return [];
+    const sanitized = parsed
+      .map(sanitizeSavedProfile)
+      .filter((profile): profile is SavedProfile => profile !== null);
+    return normalizeHistory(sanitized);
   } catch {
     return [];
   }
@@ -491,7 +476,7 @@ function loadHostKeys(): Record<string, string> {
 
 function persistProfiles(): boolean {
   try {
-    localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(profiles.slice(0, MAX_PROFILES)));
+    localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(profiles));
     return true;
   } catch {
     toast(bilingual('此浏览器无法保存连接配置。', 'Profiles could not be saved in this browser.'), 'error');
@@ -532,7 +517,6 @@ function clearPrivateKeyFields(): void {
 function clearCredentials(): void {
   resetPasswordField();
   clearPrivateKeyFields();
-  ui.accessToken.value = '';
 }
 
 function encodePassword(password: string): string {
@@ -555,7 +539,11 @@ function normalizeHost(host: string): string {
 }
 
 function targetKey(host = normalizeHost(ui.host.value), port = Number(ui.port.value), username = ui.username.value.trim()): string {
-  return `${username}@${host.toLowerCase()}:${port}`;
+  return historyKey(host, port, username);
+}
+
+function targetLabel(host: string, port: number, username: string): string {
+  return historyLabel(host, port, username);
 }
 
 function applyFormDefaults(): void {
@@ -569,9 +557,9 @@ function readProfileFromForm(): SavedProfile {
   const host = normalizeHost(ui.host.value);
   const port = Number(ui.port.value);
   const username = ui.username.value.trim();
+  const existing = profiles.find((item) => targetKey(item.host, item.port, item.username) === targetKey(host, port, username));
   const profile: SavedProfile = {
-    id: ui.profileId.value || crypto.randomUUID(),
-    name: ui.profileName.value.trim() || host,
+    id: existing?.id ?? crypto.randomUUID(),
     host,
     port,
     username,
@@ -584,8 +572,8 @@ function readProfileFromForm(): SavedProfile {
   };
   if (profile.authMethod === 'password' && ui.password.value) {
     profile.passwordBase64 = encodePassword(ui.password.value);
-  } else if (profile.authMethod === 'password' && ui.profileId.value && !passwordDirty) {
-    profile.passwordBase64 = profiles.find((item) => item.id === ui.profileId.value)?.passwordBase64;
+  } else if (profile.authMethod === 'password' && existing && !passwordDirty) {
+    profile.passwordBase64 = existing.passwordBase64;
   }
   return profile;
 }
@@ -628,7 +616,6 @@ function validateConnectForm(): string | null {
 function applyProfile(profile: SavedProfile): void {
   clearCredentials();
   ui.profileId.value = profile.id;
-  ui.profileName.value = profile.name;
   ui.host.value = profile.host;
   ui.port.value = String(profile.port);
   ui.username.value = profile.username;
@@ -641,7 +628,7 @@ function applyProfile(profile: SavedProfile): void {
     try {
       ui.password.value = decodePassword(profile.passwordBase64);
     } catch {
-      toast(bilingual('已保存的密码无法解码，请重新输入并保存。', 'The saved password could not be decoded. Enter and save it again.'), 'error');
+      toast(bilingual('历史记录中的密码无法解码，请重新输入并连接。', 'The password in history could not be decoded. Enter it again and connect.'), 'error');
     }
   }
   passwordDirty = false;
@@ -661,34 +648,28 @@ function clearForm(): void {
   currentFormError = null;
   setAuthMethod('password');
   renderProfiles();
-  ui.profileName.focus();
+  ui.host.focus();
 }
 
-function saveCurrentProfile(): void {
-  const error = validateProfileFields();
-  if (error) {
-    showFormError(error);
-    return;
-  }
-  let profile: SavedProfile;
-  try {
-    profile = readProfileFromForm();
-  } catch (profileError) {
-    showFormError(profileError instanceof Error ? profileError.message : String(profileError));
-    return;
-  }
-  if (!ui.profileName.value.trim()) ui.profileName.value = profile.name;
-  const index = profiles.findIndex((item) => item.id === profile.id);
-  if (index >= 0) profiles[index] = profile;
-  else profiles.unshift(profile);
-  profiles = profiles.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, MAX_PROFILES);
-  ui.profileId.value = profile.id;
+function saveConnectedProfile(): void {
+  if (!pendingHistory || pendingHistory.generation !== connectGeneration) return;
+  const profile = pendingHistory.profile;
+  pendingHistory = null;
+  const key = targetKey(profile.host, profile.port, profile.username);
+  const rememberedFingerprint = profile.fingerprint || hostKeys[key] || '';
+  const saved: SavedProfile = {
+    ...profile,
+    fingerprint: rememberedFingerprint,
+    updatedAt: Date.now(),
+  };
+  profiles = upsertHistory(profiles, saved);
+  ui.profileId.value = saved.id;
   if (!persistProfiles()) return;
   passwordDirty = false;
   renderProfiles();
-  toast(profile.passwordBase64
-    ? bilingual('连接配置和 Base64 编码的密码已保存在此浏览器。', 'Connection profile and Base64-encoded password saved in this browser.')
-    : bilingual('连接配置已保存。', 'Connection profile saved.'));
+  toast(saved.passwordBase64
+    ? bilingual('连接已加入历史记录，密码以 Base64 保存在此浏览器。', 'Connection added to history; the password is stored as Base64 in this browser.')
+    : bilingual('连接已加入此浏览器的历史记录。', 'Connection added to this browser\'s history.'));
 }
 
 function deleteProfile(id: string): void {
@@ -704,7 +685,7 @@ function renderProfiles(): void {
   if (profiles.length === 0) {
     const empty = document.createElement('p');
     empty.className = 'empty-list';
-    empty.textContent = bilingual('暂无已保存目标', 'No saved targets yet.');
+    empty.textContent = bilingual('暂无历史记录', 'No connection history yet.');
     ui.profileList.append(empty);
     return;
   }
@@ -719,21 +700,25 @@ function renderProfiles(): void {
     main.dataset.profileId = profile.id;
     const avatar = document.createElement('span');
     avatar.className = 'profile-avatar';
-    avatar.textContent = profile.name.slice(0, 2).toUpperCase();
+    avatar.textContent = profile.username.slice(0, 2).toUpperCase();
     const copy = document.createElement('span');
     copy.className = 'profile-copy';
     const title = document.createElement('strong');
-    title.textContent = profile.name;
-    const target = document.createElement('span');
-    target.textContent = `${profile.username}@${profile.host}:${profile.port}`;
-    copy.append(title, target);
+    const label = targetLabel(profile.host, profile.port, profile.username);
+    title.textContent = label;
+    const lastConnected = document.createElement('time');
+    const connectedAt = new Date(profile.updatedAt);
+    lastConnected.dateTime = connectedAt.toISOString();
+    const formattedTime = new Intl.DateTimeFormat(currentLanguage, { dateStyle: 'medium', timeStyle: 'short' }).format(connectedAt);
+    lastConnected.textContent = bilingual(`最后连接：${formattedTime}`, `Last connected: ${formattedTime}`);
+    copy.append(title, lastConnected);
     main.append(avatar, copy);
 
     const remove = document.createElement('button');
     remove.className = 'profile-delete';
     remove.type = 'button';
     remove.dataset.deleteProfile = profile.id;
-    remove.setAttribute('aria-label', bilingual(`删除 ${profile.name}`, `Delete ${profile.name}`));
+    remove.setAttribute('aria-label', bilingual(`删除 ${label}`, `Delete ${label}`));
     remove.textContent = '\u00d7';
     card.append(main, remove);
     ui.profileList.append(card);
@@ -856,6 +841,7 @@ function stopTimers(): void {
 function markReady(message = bilingual('交互式 Shell 已就绪', 'Interactive shell ready')): void {
   if (connectionState === 'connected') return;
   setState('connected');
+  saveConnectedProfile();
   startTimers();
   currentSessionSubtitle = messageTranslation(message);
   ui.sessionSubtitle.textContent = message;
@@ -944,6 +930,7 @@ function handleServerMessage(message: ServerMessage): void {
   }
   if (type === 'error') {
     const text = bilingualServerMessage(message.message, message.event, 'The SSH session failed.', 'SSH 错误');
+    pendingHistory = null;
     clearHostKeyPrompt();
     event(text, message.event ?? 'error', true);
     showFormError(text);
@@ -984,11 +971,11 @@ function sendTerminalData(data: string): void {
   socket.send(JSON.stringify({ type: 'input', data }));
 }
 
-async function issueTicket(accessToken: string, signal: AbortSignal): Promise<{ ticket: string; sessionId: string }> {
+async function issueTicket(signal: AbortSignal): Promise<{ ticket: string; sessionId: string }> {
   const response = await fetch('/api/session', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify({ accessToken }),
+    body: JSON.stringify({}),
     signal,
   });
   let payload: { ticket?: string; sessionId?: string; error?: string } = {};
@@ -1051,12 +1038,13 @@ async function connect(): Promise<void> {
   event(bilingual(`正在连接 ${username}@${host}:${port}`, `Starting ${username}@${host}:${port}`), 'connect');
 
   try {
-    const accessToken = ui.accessToken.value;
     const password = ui.password.value;
     const privateKey = ui.privateKey.value.trim();
     const method = authMethod();
     const term = ui.termType.value;
-    const ticketRequest = issueTicket(accessToken, abortController.signal);
+    const historyProfile = readProfileFromForm();
+    pendingHistory = { generation, profile: historyProfile };
+    const ticketRequest = issueTicket(abortController.signal);
     clearCredentials();
     const { ticket, sessionId } = await ticketRequest;
     if (authorizationAbort === abortController) authorizationAbort = null;
@@ -1099,6 +1087,7 @@ async function connect(): Promise<void> {
     });
     activeSocket.addEventListener('error', () => {
       if (socket !== activeSocket) return;
+      pendingHistory = null;
       clearHostKeyPrompt();
       event(bilingual('WebSocket 传输错误。', 'WebSocket transport error.'), 'transport', true);
       setState('error');
@@ -1106,6 +1095,7 @@ async function connect(): Promise<void> {
     activeSocket.addEventListener('close', (closeEvent) => {
       if (socket !== activeSocket) return;
       socket = null;
+      pendingHistory = null;
       currentExpectedFingerprint = '';
       stopTimers();
       clearHostKeyPrompt();
@@ -1125,6 +1115,7 @@ async function connect(): Promise<void> {
   } catch (error) {
     if (authorizationAbort === abortController) authorizationAbort = null;
     if (generation !== connectGeneration) return;
+    pendingHistory = null;
     clearCredentials();
     clearHostKeyPrompt();
     const message = error instanceof DOMException && error.name === 'AbortError'
@@ -1141,6 +1132,7 @@ async function connect(): Promise<void> {
 
 function disconnect(reason = bilingual('已由用户断开连接', 'Disconnected by user')): void {
   connectGeneration++;
+  pendingHistory = null;
   authorizationAbort?.abort();
   authorizationAbort = null;
   const activeSocket = socket;
@@ -1293,7 +1285,6 @@ ui.form.addEventListener('submit', (formEvent) => {
   void connect();
 });
 ui.newProfile.addEventListener('click', clearForm);
-ui.saveProfile.addEventListener('click', saveCurrentProfile);
 ui.shareLink.addEventListener('click', copySafeLink);
 ui.password.addEventListener('input', () => { passwordDirty = true; });
 ui.revealPassword.addEventListener('click', () => {

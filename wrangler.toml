@@ -13,7 +13,6 @@ not_found_handling = "single-page-application"
 run_worker_first = true
 
 [vars]
-ALLOW_ANONYMOUS = "true"
 CONNECT_TIMEOUT_MS = "10000"
 
 [[durable_objects.bindings]]
@@ -23,7 +22,3 @@ class_name = "SSHSessionDO"
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["SSHSessionDO"]
-
-# Recommended production gate. Without it, sessions stay disabled unless
-# ALLOW_ANONYMOUS is explicitly changed to "true". Never store it here:
-#   npx wrangler secret put ACCESS_TOKEN

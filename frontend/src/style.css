@@ -511,7 +511,7 @@ button:disabled {
 }
 
 .profile-copy strong,
-.profile-copy span {
+.profile-copy time {
   display: block;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -523,7 +523,7 @@ button:disabled {
   font-size: 12px;
 }
 
-.profile-copy span,
+.profile-copy time,
 .profile-meta {
   color: var(--muted);
   font-family: var(--mono);

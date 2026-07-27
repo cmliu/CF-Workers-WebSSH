@@ -49,8 +49,6 @@ export interface TerminalSize {
 export interface Env {
   SSH_SESSIONS: DurableObjectNamespace;
   ASSETS?: Fetcher;
-  ACCESS_TOKEN?: string;
-  ALLOW_ANONYMOUS?: string;
   CONNECT_TIMEOUT_MS?: string;
 }
 
