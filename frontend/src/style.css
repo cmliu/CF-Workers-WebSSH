@@ -169,7 +169,6 @@ button:disabled {
   font-weight: 700;
 }
 
-.runtime-badge,
 .count-badge {
   border: 1px solid var(--border);
   border-radius: 999px;
@@ -178,11 +177,6 @@ button:disabled {
   font-size: 9px;
   font-weight: 700;
   letter-spacing: 0.12em;
-}
-
-.runtime-badge {
-  padding: 5px 8px;
-  letter-spacing: 0.06em;
 }
 
 .icon-button {
@@ -1347,10 +1341,6 @@ button:disabled {
   .app-shell {
     display: block;
     height: calc(100% - var(--topbar-height));
-  }
-
-  .runtime-badge {
-    display: none;
   }
 
   .connection-panel {
