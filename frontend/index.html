@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#080b10" />
+    <meta name="description" content="安全的 Cloudflare Workers 原生 WebSSH 终端 / A secure, native Cloudflare Workers WebSSH terminal" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <title>Workers WebSSH</title>
+  </head>
+  <body>
+    <div id="app">
+      <header class="topbar">
+        <div class="brand-group">
+          <button id="panel-toggle" class="icon-button mobile-only" type="button" aria-label="打开连接面板 / Open connection panel" aria-controls="connection-panel" aria-expanded="false">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16" /></svg>
+          </button>
+          <a class="brand" href="/" aria-label="Workers WebSSH 首页 / Workers WebSSH home">
+            <span class="brand-mark" aria-hidden="true">&gt;_</span>
+            <span><strong>Workers</strong> WebSSH</span>
+          </a>
+          <span class="runtime-badge">边缘原生 / EDGE NATIVE</span>
+        </div>
+
+        <div class="topbar-actions">
+          <div id="global-status" class="status-pill" data-state="idle" role="status" aria-live="polite">
+            <span class="status-dot"></span>
+            <span id="global-status-label">离线 / Offline</span>
+          </div>
+          <button id="theme-toggle" class="icon-button" type="button" aria-label="切换颜色主题 / Toggle color theme">
+            <svg class="sun-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.65 17.65l1.42 1.42M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.65 6.35l1.42-1.42" /></svg>
+          </button>
+          <a class="icon-button" href="https://github.com/cmliu/CF-Workers-WebSSH" target="_blank" rel="noreferrer" aria-label="打开源代码仓库 / Open source repository">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48v-1.87c-2.78.6-3.37-1.18-3.37-1.18-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.61.07-.61 1 .07 1.53 1.03 1.53 1.03.9 1.53 2.35 1.09 2.92.83.09-.65.35-1.09.64-1.34-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.64 0 0 .84-.27 2.75 1.02A9.56 9.56 0 0 1 12 6.82c.85 0 1.71.11 2.51.34 1.91-1.29 2.75-1.02 2.75-1.02.55 1.37.2 2.39.1 2.64.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.86v2.76c0 .27.18.58.69.48A10 10 0 0 0 12 2Z" /></svg>
+          </a>
+        </div>
+      </header>
+
+      <div class="app-shell">
+        <button id="panel-scrim" class="panel-scrim" type="button" aria-label="关闭连接面板 / Close connection panel" hidden></button>
+        <aside id="connection-panel" class="connection-panel" aria-label="连接管理 / Connection management">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">连接管理 / CONNECTIONS</p>
+              <h1>SSH 工作台 <small>SSH workspace</small></h1>
+            </div>
+            <button id="new-profile" class="small-button" type="button">新建 / New</button>
+          </div>
+
+          <section class="profiles-section" aria-labelledby="profiles-title">
+            <div class="section-title-row">
+              <h2 id="profiles-title">已保存目标 / Saved targets</h2>
+              <span id="profile-count" class="count-badge">0</span>
+            </div>
+            <div id="profile-list" class="profile-list">
+              <p class="empty-list">暂无已保存目标 / No saved targets yet.</p>
+            </div>
+          </section>
+
+          <form id="connection-form" class="connection-form" autocomplete="off" novalidate>
+            <input id="profile-id" type="hidden" />
+            <div class="field-grid single">
+              <label class="field">
+                <span>连接名称 <small>Profile name</small></span>
+                <input id="profile-name" name="profileName" type="text" maxlength="64" placeholder="生产环境 / Production" />
+              </label>
+            </div>
+
+            <div class="field-grid host-grid">
+              <label class="field">
+                <span>主机 <small>Host</small></span>
+                <input id="host" name="host" type="text" maxlength="253" placeholder="ssh.example.com" required spellcheck="false" />
+              </label>
+              <label class="field port-field">
+                <span>端口 <small>Port</small></span>
+                <input id="port" name="port" type="number" value="22" min="1" max="65535" required inputmode="numeric" />
+              </label>
+            </div>
+
+            <div class="field-grid single">
+              <label class="field">
+                <span>用户名 <small>Username</small></span>
+                <input id="username" name="username" type="text" maxlength="128" placeholder="root" required autocomplete="username" spellcheck="false" />
+              </label>
+            </div>
+
+            <fieldset class="auth-fieldset">
+              <legend>身份认证 / Authentication</legend>
+              <div class="segmented-control" role="radiogroup" aria-label="身份认证方式 / Authentication method">
+                <label><input type="radio" name="authMethod" value="password" checked /><span>密码 / Password</span></label>
+                <label><input type="radio" name="authMethod" value="publickey" /><span>SSH 密钥 / SSH key</span></label>
+              </div>
+
+              <div id="password-field" class="field secret-field">
+                <label for="password">密码 <small>Password · 永不存储 / never stored</small></label>
+                <span class="input-action-wrap">
+                  <input id="password" name="password" type="password" maxlength="4096" autocomplete="current-password" />
+                  <button id="reveal-password" class="input-action" type="button" aria-label="显示密码 / Show password">显示 / Show</button>
+                </span>
+              </div>
+
+              <div id="key-field" class="key-field" hidden>
+                <label class="field">
+                  <span>私钥 <small>Private key · 未加密 OpenSSH / unencrypted OpenSSH</small></span>
+                  <textarea id="private-key" name="privateKey" rows="5" maxlength="65536" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea>
+                </label>
+                <label class="file-picker">
+                  <input id="key-file" type="file" accept=".pem,.key,.openssh,text/plain" />
+                  <span>选择密钥文件 / Choose key file</span>
+                  <small id="key-file-name">未选择文件 / No file selected</small>
+                </label>
+              </div>
+            </fieldset>
+
+            <details class="advanced-options">
+              <summary>高级选项 / Advanced options</summary>
+              <div class="advanced-body">
+                <label class="field">
+                  <span>初始命令 <small>Initial command</small></span>
+                  <input id="initial-command" name="initialCommand" type="text" maxlength="4096" placeholder="tmux attach || tmux" spellcheck="false" />
+                </label>
+                <div class="field-grid two">
+                  <label class="field">
+                    <span>终端类型 <small>Terminal</small></span>
+                    <select id="term-type" name="termType">
+                      <option value="xterm-256color">xterm-256color</option>
+                      <option value="xterm">xterm</option>
+                      <option value="screen-256color">screen-256color</option>
+                    </select>
+                  </label>
+                  <label class="field">
+                    <span>字符编码 <small>Encoding</small></span>
+                    <select id="encoding" name="encoding">
+                      <option value="utf-8">UTF-8</option>
+                      <option value="gb18030">GB18030</option>
+                      <option value="big5">Big5</option>
+                    </select>
+                  </label>
+                </div>
+                <label class="field">
+                  <span>预期主机指纹 <small>Expected host fingerprint · SHA-256</small></span>
+                  <input id="fingerprint" name="fingerprint" type="text" maxlength="128" placeholder="首次使用后自动保存 / Saved after first use" spellcheck="false" />
+                </label>
+                <label class="field">
+                  <span>网关访问令牌 <small>Gateway access token · 可选且永不存储 / optional, never stored</small></span>
+                  <input id="access-token" name="accessToken" type="password" maxlength="4096" autocomplete="off" />
+                </label>
+              </div>
+            </details>
+
+            <div id="form-error" class="form-error" role="alert" hidden></div>
+            <div class="form-actions">
+              <button id="connect-button" class="primary-button" type="submit">
+                <span class="button-icon" aria-hidden="true">&gt;_</span>
+                <span>连接 / Connect</span>
+              </button>
+              <button id="save-profile" class="secondary-button" type="button">保存 / Save</button>
+              <button id="share-link" class="icon-button bordered" type="button" aria-label="复制安全连接链接 / Copy safe connection link">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" /></svg>
+              </button>
+            </div>
+          </form>
+
+          <p class="privacy-note">
+            凭据仅通过本页面的 TLS WebSocket 传输，并只在当前会话内存中保留。 / Credentials travel only through this page's TLS WebSocket and remain in memory for the active session.
+          </p>
+        </aside>
+
+        <main class="workspace">
+          <section class="session-strip" aria-label="实时连接状态 / Live connection status">
+            <div class="session-target">
+              <span class="live-orb" id="live-orb"></span>
+              <div>
+                <strong id="session-title">无活动会话 / No active session</strong>
+                <span id="session-subtitle">选择目标并连接 / Choose a target and connect</span>
+              </div>
+            </div>
+            <div class="session-metrics">
+              <div><span>边缘 / EDGE</span><strong id="metric-edge">--</strong></div>
+              <div><span>延迟 / RTT</span><strong id="metric-rtt">--</strong></div>
+              <div><span>时长 / UPTIME</span><strong id="metric-uptime">00:00</strong></div>
+              <div><span>主机密钥 / HOST KEY</span><strong id="metric-host-key">--</strong></div>
+            </div>
+          </section>
+
+          <section id="terminal-card" class="terminal-card">
+            <div class="terminal-toolbar">
+              <div class="window-controls" aria-hidden="true"><i></i><i></i><i></i></div>
+              <div id="terminal-label" class="terminal-label">终端 / terminal · 等待 / waiting</div>
+              <div class="terminal-actions">
+                <button id="clear-terminal" class="toolbar-button" type="button">清屏 / Clear</button>
+                <button id="fullscreen-terminal" class="toolbar-button" type="button">全屏 / Fullscreen</button>
+                <button id="disconnect-button" class="toolbar-button danger" type="button" disabled>断开 / Disconnect</button>
+              </div>
+            </div>
+            <div id="terminal-stage" class="terminal-stage">
+              <div id="terminal" role="application" aria-label="SSH 终端 / SSH terminal"></div>
+              <div id="terminal-empty" class="terminal-empty">
+                <div class="empty-glyph" aria-hidden="true">&gt;_</div>
+                <h2>终端已就绪 / Your terminal is ready</h2>
+                <p>从连接面板建立 SSH 连接，开始加密的边缘会话。<br /><span lang="en">Open an SSH connection from the panel to start an encrypted edge session.</span></p>
+                <button id="empty-connect" class="small-button" type="button">配置连接 / Configure connection</button>
+              </div>
+            </div>
+            <div class="event-bar">
+              <span id="event-message">Worker 运行时待命 / Worker runtime standing by</span>
+              <button id="event-toggle" type="button" aria-expanded="false">会话日志 / Session log</button>
+            </div>
+            <div id="event-log" class="event-log" hidden aria-live="polite"></div>
+          </section>
+        </main>
+      </div>
+
+      <div id="toast-region" class="toast-region" aria-live="polite"></div>
+
+      <dialog id="host-key-dialog" class="host-key-dialog" aria-labelledby="host-key-title">
+        <form method="dialog">
+          <span class="dialog-icon" aria-hidden="true">密钥<br />KEY</span>
+          <div>
+            <p class="eyebrow">主机身份 / HOST IDENTITY</p>
+            <h2 id="host-key-title">信任此 SSH 主机？ / Trust this SSH host?</h2>
+            <p>服务器提供了尚未为此目标固定的密钥。继续前，请通过可信渠道核验。<br /><span lang="en">The server presented a key that has not been pinned for this target. Verify it through a trusted channel before continuing.</span></p>
+          </div>
+          <dl>
+            <div><dt>目标 / Target</dt><dd id="host-key-target">--</dd></div>
+            <div><dt>密钥类型 / Key type</dt><dd id="host-key-type">--</dd></div>
+            <div><dt>SHA-256 指纹 / fingerprint</dt><dd id="host-key-fingerprint">--</dd></div>
+          </dl>
+          <label class="trust-check"><input id="remember-host-key" type="checkbox" checked /> 下次记住并验证此指纹 / Remember and verify this fingerprint next time</label>
+          <div class="dialog-actions">
+            <button id="reject-host-key" class="secondary-button" value="reject" type="submit">取消连接 / Cancel</button>
+            <button id="accept-host-key" class="primary-button" value="accept" type="submit">信任并继续 / Trust &amp; continue</button>
+          </div>
+        </form>
+      </dialog>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
