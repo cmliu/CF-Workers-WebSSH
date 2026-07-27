@@ -160,6 +160,7 @@ button:disabled {
   width: 34px;
   height: 34px;
   place-items: center;
+  border: 1px solid var(--border);
   border: 1px solid color-mix(in srgb, var(--accent) 54%, var(--border));
   border-radius: 9px;
   background: var(--accent-dim);
@@ -240,6 +241,7 @@ button:disabled {
 #language-toggle[data-language='zh-CN'] .language-icon span:first-child,
 #language-toggle[data-language='en'] .language-icon span:last-child {
   z-index: 2;
+  border-color: var(--border);
   border-color: color-mix(in srgb, var(--accent) 52%, var(--border));
   background: var(--surface-2);
   color: var(--accent);
@@ -325,6 +327,7 @@ button:disabled {
 }
 
 .status-pill[data-state='connected'] {
+  border-color: var(--border);
   border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
   color: var(--accent);
 }
@@ -364,6 +367,20 @@ button:disabled {
   scrollbar-color: var(--surface-3) transparent;
   scrollbar-width: thin;
   transition: opacity 140ms ease;
+}
+
+.connection-panel::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.connection-panel::-webkit-scrollbar-thumb {
+  background: var(--surface-3);
+  border-radius: 4px;
+}
+
+.connection-panel::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 .panel-heading,
@@ -420,6 +437,7 @@ button:disabled {
 .small-button:hover,
 .toolbar-button:hover,
 .secondary-button:hover {
+  border-color: var(--border);
   border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
   color: var(--text);
 }
@@ -489,6 +507,7 @@ button:disabled {
 
 .profile-card:hover,
 .profile-card.active {
+  border-color: var(--border);
   border-color: color-mix(in srgb, var(--accent) 38%, var(--border));
   background: var(--accent-dim);
 }
@@ -632,6 +651,7 @@ button:disabled {
 .field input:hover,
 .field textarea:hover,
 .field select:hover {
+  border-color: var(--border);
   border-color: color-mix(in srgb, var(--muted) 54%, var(--border));
 }
 
@@ -789,6 +809,7 @@ button:disabled {
 
 .form-error {
   padding: 9px 10px;
+  border: 1px solid var(--border);
   border: 1px solid color-mix(in srgb, var(--danger) 32%, var(--border));
   border-radius: 8px;
   background: var(--danger-dim);
@@ -829,6 +850,7 @@ button:disabled {
 }
 
 .primary-button.is-danger {
+  border-color: var(--border);
   border-color: color-mix(in srgb, var(--danger) 70%, var(--border));
   background: var(--danger);
   color: #26090d;
@@ -1039,6 +1061,20 @@ button:disabled {
   scrollbar-width: thin;
 }
 
+.xterm-viewport::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.xterm-viewport::-webkit-scrollbar-thumb {
+  background: #31424e;
+  border-radius: 4px;
+}
+
+.xterm-viewport::-webkit-scrollbar-track {
+  background: transparent;
+}
+
 .terminal-empty {
   position: absolute;
   inset: 0;
@@ -1085,6 +1121,7 @@ button:disabled {
 
 .terminal-empty p span[lang='en'],
 .host-key-dialog p span[lang='en'] {
+  color: currentColor;
   color: color-mix(in srgb, currentColor 78%, transparent);
   font-size: 0.92em;
 }
@@ -1187,6 +1224,7 @@ button:disabled {
 }
 
 .toast.error {
+  border-color: var(--border);
   border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
   color: var(--danger);
 }
@@ -1205,6 +1243,7 @@ button:disabled {
 
 .host-key-dialog::backdrop {
   background: rgba(2, 6, 9, 0.76);
+  -webkit-backdrop-filter: blur(5px);
   backdrop-filter: blur(5px);
 }
 
@@ -1220,6 +1259,7 @@ button:disabled {
   width: 46px;
   height: 46px;
   place-items: center;
+  border: 1px solid var(--border);
   border: 1px solid color-mix(in srgb, var(--warning) 44%, var(--border));
   border-radius: 11px;
   background: color-mix(in srgb, var(--warning) 10%, transparent);
@@ -1386,6 +1426,7 @@ button:disabled {
     padding: 0;
     border: 0;
     background: rgba(1, 5, 8, 0.68);
+    -webkit-backdrop-filter: blur(3px);
     backdrop-filter: blur(3px);
   }
 
