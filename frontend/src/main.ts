@@ -273,7 +273,6 @@ const ui = {
   sessionTitle: element<HTMLElement>('session-title'),
   sessionSubtitle: element<HTMLElement>('session-subtitle'),
   liveOrb: element<HTMLElement>('live-orb'),
-  metricEdge: element<HTMLElement>('metric-edge'),
   metricRtt: element<HTMLElement>('metric-rtt'),
   metricUptime: element<HTMLElement>('metric-uptime'),
   metricHostKey: element<HTMLElement>('metric-host-key'),
@@ -281,7 +280,6 @@ const ui = {
   terminalStage: element<HTMLElement>('terminal-stage'),
   terminalElement: element<HTMLElement>('terminal'),
   terminalEmpty: element<HTMLElement>('terminal-empty'),
-  terminalLabel: element<HTMLElement>('terminal-label'),
   emptyConnect: element<HTMLButtonElement>('empty-connect'),
   clearTerminal: element<HTMLButtonElement>('clear-terminal'),
   fullscreenTerminal: element<HTMLButtonElement>('fullscreen-terminal'),
@@ -359,7 +357,6 @@ let lastPingAt = 0;
 let pendingHostKey: { fingerprint: string; keyType: string } | null = null;
 let currentTargetKey = '';
 let currentTargetLabel = '';
-let currentTerminalTarget = '';
 let currentInitialCommand = '';
 let initialCommandSent = false;
 let decoder = new TextDecoder('utf-8');
@@ -715,10 +712,12 @@ function clearCredentials(): void {
   clearPrivateKeyFields();
 }
 
-function invalidateAndClearCredentials(): void {
+// A stale async history-password decrypt must never overwrite the form. The
+// connection lifecycle keeps the entered credentials in place (history can
+// restore them anyway), so only the in-flight load is invalidated here.
+function invalidateHistoryPasswordLoad(): void {
   historyPasswordLoadGeneration++;
   historyPasswordLoading = false;
-  clearCredentials();
 }
 
 function normalizeHost(host: string): string {
@@ -1043,7 +1042,7 @@ function setPanelOpen(open: boolean): void {
   panelOpen = open;
   const view = resolveConnectionPanel(open, panelMedia.matches);
   if (!open && (connectionState === 'connecting' || connectionState === 'connected' || connectionState === 'disconnecting')) {
-    invalidateAndClearCredentials();
+    invalidateHistoryPasswordLoad();
   }
   if (!view.expanded && ui.panel.contains(document.activeElement)) ui.panelToggle.focus();
   ui.shell.classList.toggle('panel-collapsed', view.desktopCollapsed);
@@ -1096,7 +1095,7 @@ function stopTimers(): void {
 
 function markReady(message = bilingual('交互式 Shell 已就绪', 'Interactive shell ready')): void {
   if (connectionState === 'connected') return;
-  invalidateAndClearCredentials();
+  invalidateHistoryPasswordLoad();
   setState('connected');
   setPanelOpen(false);
   void saveConnectedProfile().catch(() => {
@@ -1154,7 +1153,6 @@ function handleServerMessage(message: ServerMessage): void {
   }
   if (type === 'rtt') {
     if (typeof message.latency === 'number') ui.metricRtt.textContent = `${Math.round(message.latency)} ms`;
-    if (message.colo) ui.metricEdge.textContent = message.colo;
     return;
   }
   if (type === 'host_key') {
@@ -1246,7 +1244,7 @@ function failActiveConnection(activeSocket: WebSocket | null, closeReason: strin
   currentExpectedFingerprint = '';
   stopTimers();
   clearHostKeyPrompt();
-  invalidateAndClearCredentials();
+  invalidateHistoryPasswordLoad();
   currentSessionSubtitle = displayReason;
   ui.sessionSubtitle.textContent = localize(displayReason);
   setState('error');
@@ -1306,7 +1304,6 @@ async function connect(): Promise<void> {
   const username = ui.username.value.trim();
   currentTargetKey = targetKey(host, port, username);
   currentTargetLabel = targetLabel(host, port, username);
-  currentTerminalTarget = `${username}@${host.includes(':') ? `[${host}]` : host}`;
   const pinnedKey = ui.fingerprint.value.trim() || hostKeys[currentTargetKey] || '';
   currentExpectedFingerprint = pinnedKey;
   if (pinnedKey) ui.fingerprint.value = pinnedKey;
@@ -1318,10 +1315,8 @@ async function connect(): Promise<void> {
   ui.sessionTitle.textContent = currentTargetLabel;
   currentSessionSubtitle = localized('正在授权 Worker 会话...', 'Authorizing Worker session...');
   ui.sessionSubtitle.textContent = localize(currentSessionSubtitle);
-  ui.metricEdge.textContent = '--';
   ui.metricRtt.textContent = '--';
   ui.metricHostKey.textContent = '--';
-  ui.terminalLabel.textContent = `${bilingual('终端', 'terminal')} · ${currentTerminalTarget}`;
   event(bilingual(`正在连接 ${username}@${host}:${port}`, `Starting ${username}@${host}:${port}`), 'connect');
 
   try {
@@ -1334,7 +1329,6 @@ async function connect(): Promise<void> {
     void historyProfile.catch(() => undefined);
     pendingHistory = { generation, target: currentTargetKey, profile: historyProfile };
     const ticketRequest = issueTicket(abortController.signal);
-    clearCredentials();
     const { ticket, sessionId } = await ticketRequest;
     if (authorizationAbort === abortController) authorizationAbort = null;
     if (generation !== connectGeneration) return;
@@ -1389,7 +1383,7 @@ async function connect(): Promise<void> {
       currentExpectedFingerprint = '';
       stopTimers();
       clearHostKeyPrompt();
-      invalidateAndClearCredentials();
+      invalidateHistoryPasswordLoad();
       const wasActive = connectionState === 'connected';
       const reason = closeEvent.reason
         ? bilingualServerMessage(closeEvent.reason)
@@ -1406,7 +1400,7 @@ async function connect(): Promise<void> {
     if (authorizationAbort === abortController) authorizationAbort = null;
     if (generation !== connectGeneration) return;
     pendingHistory = null;
-    invalidateAndClearCredentials();
+    invalidateHistoryPasswordLoad();
     clearHostKeyPrompt();
     const message = error instanceof DOMException && error.name === 'AbortError'
       ? bilingual('连接授权已取消。', 'Connection authorization was cancelled.')
@@ -1431,7 +1425,7 @@ function disconnect(reason = bilingual('已由用户断开连接', 'Disconnected
   socket = null;
   stopTimers();
   clearHostKeyPrompt();
-  invalidateAndClearCredentials();
+  invalidateHistoryPasswordLoad();
   currentExpectedFingerprint = '';
   currentSessionSubtitle = messageTranslation(reason);
   ui.sessionSubtitle.textContent = reason;
@@ -1685,9 +1679,6 @@ ui.languageToggle.addEventListener('click', () => {
   setState(connectionState);
   setPanelOpen(panelOpen);
   if (connectionState === 'idle' && !currentTargetLabel) ui.sessionTitle.textContent = bilingual('无活动会话', 'No active session');
-  ui.terminalLabel.textContent = connectionState === 'idle'
-    ? bilingual('终端 · 等待', 'terminal · waiting')
-    : `${bilingual('终端', 'terminal')} · ${currentTerminalTarget}`;
 });
 ui.themeToggle.addEventListener('click', () => {
   const next = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
@@ -1725,7 +1716,6 @@ async function initialize(): Promise<void> {
   setState('idle');
   ui.sessionTitle.textContent = bilingual('无活动会话', 'No active session');
   ui.sessionSubtitle.textContent = bilingual('选择目标并连接', 'Choose a target and connect');
-  ui.terminalLabel.textContent = bilingual('终端 · 等待', 'terminal · waiting');
   ui.eventMessage.textContent = bilingual('Worker 运行时待命', 'Worker runtime standing by');
   initializeCompatibilityAPI();
   const shouldAutoConnect = applyURLParameters();

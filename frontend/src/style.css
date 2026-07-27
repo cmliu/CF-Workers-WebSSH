@@ -962,7 +962,7 @@ button:disabled {
 
 .terminal-toolbar {
   display: grid;
-  grid-template-columns: 74px minmax(0, 1fr) auto;
+  grid-template-columns: 74px 1fr;
   align-items: center;
   gap: 10px;
   padding: 0 11px;
@@ -991,17 +991,9 @@ button:disabled {
   background: #5fd49d;
 }
 
-.terminal-label {
-  overflow: hidden;
-  font-family: var(--mono);
-  font-size: 9px;
-  text-align: center;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .terminal-actions {
   gap: 5px;
+  justify-self: end;
 }
 
 .terminal-actions .toolbar-button {
@@ -1448,10 +1440,6 @@ button:disabled {
 
   #global-status-label {
     display: none;
-  }
-
-  .terminal-label {
-    text-align: left;
   }
 
   .field-grid.two {
