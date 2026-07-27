@@ -1,6 +1,6 @@
 import { connect } from 'cloudflare:sockets';
 import { parseConnectMessage, type Env } from '../types';
-import { assertPublicTarget } from './security';
+import { assertPublicTarget, toSocketHostname } from './security';
 import { createTicket, verifyTicket } from './security';
 import { SSHSession } from './session';
 
@@ -139,9 +139,9 @@ export class SSHSessionDO implements DurableObject {
 
   private async openVerifiedAddress(addresses: string[], port: number, pending: PendingConnection): Promise<Socket> {
     let lastError: unknown = new Error('No verified target address is available');
-    for (const hostname of addresses) {
+    for (const address of addresses) {
       if (pending.cancelled) throw new Error('SSH connection attempt was cancelled');
-      const socket = connect({ hostname, port }, { secureTransport: 'off', allowHalfOpen: false });
+      const socket = connect({ hostname: toSocketHostname(address), port }, { secureTransport: 'off', allowHalfOpen: false });
       pending.socket = socket;
       let timeoutId: ReturnType<typeof setTimeout> | undefined;
       try {

@@ -105,6 +105,15 @@ export function isPrivateAddress(host: string): boolean {
   return false;
 }
 
+// cloudflare:sockets connect() joins hostname and port into a single
+// "host:port" authority string, so an IPv6 literal must be bracketed
+// (RFC 3986) or the egress proxy cannot parse it and rejects the
+// connection with "proxy request failed".
+export function toSocketHostname(address: string): string {
+  if (address.includes(':') && !address.startsWith('[')) return `[${address}]`;
+  return address;
+}
+
 interface DnsAnswer { type: number; data: string }
 
 export async function resolvePublicAddresses(host: string): Promise<string[]> {
