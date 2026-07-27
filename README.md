@@ -51,77 +51,10 @@ Cloudflare Worker
 
 ## 部署教程
 
-### 1. 准备条件
-
-- 一个 Cloudflare 账户，并已启用 Workers 与 Durable Objects。
-- Node.js `22.12.0` 或更高版本，以及 npm。
-- 一台具有公网 IP 或公网 DNS 记录、可从 Cloudflare 网络访问的 SSH 服务器。
-
-```bash
-node --version
-npm --version
-```
-
-### 2. 获取代码并安装依赖
-
-```bash
-git clone https://github.com/cmliu/CF-Workers-WebSSH.git
-cd CF-Workers-WebSSH
-npm ci
-```
-
-### 3. 登录 Cloudflare
-
-```bash
-npx wrangler login
-npx wrangler whoami
-```
-
-无浏览器的 CI 环境应使用权限最小化的 Cloudflare API Token，并通过 CI Secret 提供 `CLOUDFLARE_API_TOKEN`。
-
-### 4. 检查 Worker 配置
-
-默认配置位于 [`wrangler.toml`](wrangler.toml)。可修改 `name` 决定默认的 `*.workers.dev` 子域名。请保留 `SSH_SESSIONS` Durable Object binding 和 `v1` migration。
-
-### 5. 完整检查
-
-```bash
-npm run check
-```
-
-依次执行 Worker 与前端类型检查、前端构建和 Wrangler dry-run。任何一步失败都应先修复。
-
-### 6. 首次发布
-
-```bash
-npm run deploy
-```
-
-部署完成后访问：
-
-```text
-https://cf-workers-webssh.<your-subdomain>.workers.dev
-```
-
-### 7. 验证部署
-
-```bash
-curl https://cf-workers-webssh.<your-subdomain>.workers.dev/api/health
-# {"status":"ok","runtime":"cloudflare-workers","ssh":true}
-```
-
-在浏览器打开 Worker 地址，输入 SSH 主机、端口和用户名，选择认证方式并连接。第一次连接时，通过可信渠道核对页面显示的 SHA-256 主机指纹。
-
-### 8. 更新部署
-
-```bash
-git pull --ff-only
-npm ci
-npm run check
-npm run deploy
-```
-
-不要删除已发布过的 migration tag，也不要随意修改已部署 Durable Object 的类名。
+1. Fork 该项目到用户自己的 GitHub 仓库。
+2. 在部署平台（如 Vercel）点击 "Continue with GitHub" 按钮，选择已 Fork 的项目进行部署。
+3. 在"构建命令"（Build Command）一栏中填入 `npm run deploy`。
+4. 点击"部署"按钮即可完成部署。
 
 ## 配置项
 
