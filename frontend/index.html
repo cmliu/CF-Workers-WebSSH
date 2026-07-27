@@ -161,7 +161,7 @@
               <div id="password-field" class="field secret-field">
                 <label for="password">
                   <span data-i18n-zh="密码" data-i18n-en="Password">密码</span>
-                  <small data-i18n-zh="永不存储" data-i18n-en="never stored">永不存储</small>
+                  <small data-i18n-zh="保存配置时使用 Base64 编码" data-i18n-en="Base64-encoded when profile is saved">保存配置时使用 Base64 编码</small>
                 </label>
                 <span class="input-action-wrap">
                   <input id="password" name="password" type="password" maxlength="4096" autocomplete="current-password" />
@@ -258,9 +258,9 @@
 
           <p
             class="privacy-note"
-            data-i18n-zh="凭据仅通过本页面的 TLS WebSocket 传输，并只在当前会话内存中保留。"
-            data-i18n-en="Credentials travel only through this page's TLS WebSocket and remain in memory for the active session."
-          >凭据仅通过本页面的 TLS WebSocket 传输，并只在当前会话内存中保留。</p>
+            data-i18n-zh="保存配置时，密码会以可逆的 Base64 编码保存在此浏览器；私钥和网关令牌不会保存。"
+            data-i18n-en="Saved profiles store passwords in reversible Base64 in this browser; private keys and gateway tokens are not saved."
+          >保存配置时，密码会以可逆的 Base64 编码保存在此浏览器；私钥和网关令牌不会保存。</p>
         </aside>
 
         <main class="workspace">

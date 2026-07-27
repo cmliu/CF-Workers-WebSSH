@@ -13,7 +13,7 @@
 - 基于 xterm.js 的响应式终端，支持桌面端和移动端、自动缩放、全屏和会话日志。
 - 支持密码认证，以及 Ed25519、RSA、ECDSA 的未加密 OpenSSH 私钥认证。
 - 首次连接时暂停认证并显示主机 SHA-256 指纹，确认后才会发送 SSH 凭据。
-- 可在浏览器本地保存连接配置和主机指纹，但不保存密码、私钥或网关令牌。
+- 可在浏览器本地保存连接配置、Base64 编码的密码和主机指纹，但不保存私钥或网关令牌。
 - 支持 UTF-8、GB18030、Big5 显示编码、初始命令和无凭据分享链接。
 - 提供一次性会话票据、同源检查、HTTPS 强制、安全响应头和公网目标校验。
 - 运行时无 SSH 第三方依赖，SSH 数据包、密钥交换、加密、认证和通道逻辑均使用 TypeScript 与 Web Crypto 实现。
@@ -77,7 +77,7 @@ Cloudflare Worker
 - API 和 WebSocket 必须来自页面同源 `Origin`；Cloudflare 边缘上的 HTTP API 请求会被拒绝，页面请求会重定向至 HTTPS。
 - 域名解析后逐个检查公网地址，并直接连接已验证 IP，以限制 SSRF 与 DNS 重绑定。
 - SSH 主机密钥会验证交换签名并计算 `SHA256:` 指纹；没有固定指纹时，认证会暂停等待用户确认。
-- 密码、私钥和网关令牌不会写入 Local Storage 或 Durable Object 存储。连接表单在发起授权后立即清空，Worker 在生成认证请求后释放凭据引用。
+- 保存连接配置时，密码会以可逆的 Base64 编码写入浏览器 Local Storage；这不是加密，能访问该站点本地存储的代码可以还原密码。私钥和网关令牌不会写入 Local Storage，任何凭据都不会写入 Durable Object 存储。连接表单在发起授权后立即清空，Worker 在生成认证请求后释放凭据引用。
 - 响应设置 CSP、HSTS、`X-Frame-Options`、`X-Content-Type-Options` 等安全头。
 
 ### 信任边界

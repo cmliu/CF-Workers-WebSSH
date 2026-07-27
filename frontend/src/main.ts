@@ -20,6 +20,7 @@ interface SavedProfile {
   port: number;
   username: string;
   authMethod: AuthMethod;
+  passwordBase64?: string;
   initialCommand: string;
   termType: string;
   encoding: string;
@@ -90,6 +91,7 @@ const THEME_STORAGE_KEY = 'workers-webssh.theme';
 const LANGUAGE_STORAGE_KEY = 'workers-webssh.language';
 const MAX_PROFILES = 30;
 const MAX_KEY_BYTES = 65_536;
+const MAX_PASSWORD_BASE64_LENGTH = 16_384;
 const PING_INTERVAL_MS = 25_000;
 
 function loadLanguage(): Language {
@@ -358,6 +360,7 @@ let currentExpectedFingerprint = '';
 let currentSessionSubtitle: LocalizedMessage = { zh: '选择目标并连接', en: 'Choose a target and connect' };
 let currentEventMessage: LocalizedMessage = { zh: 'Worker 运行时待命', en: 'Worker runtime standing by' };
 let currentFormError: LocalizedMessage | null = null;
+let passwordDirty = false;
 
 const terminal = new Terminal({
   allowProposedApi: false,
@@ -419,6 +422,11 @@ function isSavedProfile(value: unknown): value is SavedProfile {
     typeof item.username === 'string' &&
     item.username.length >= 1 && item.username.length <= 128 && !/[\r\n\0]/.test(item.username) &&
     (item.authMethod === 'password' || item.authMethod === 'publickey') &&
+    (item.passwordBase64 === undefined || (
+      typeof item.passwordBase64 === 'string' &&
+      item.passwordBase64.length <= MAX_PASSWORD_BASE64_LENGTH &&
+      /^[A-Za-z0-9+/]*={0,2}$/.test(item.passwordBase64)
+    )) &&
     typeof item.initialCommand === 'string' &&
     item.initialCommand.length <= 4096 &&
     typeof item.termType === 'string' &&
@@ -431,10 +439,39 @@ function isSavedProfile(value: unknown): value is SavedProfile {
   );
 }
 
+function sanitizeSavedProfile(value: unknown): SavedProfile | null {
+  if (!isSavedProfile(value)) return null;
+  const profile: SavedProfile = {
+    id: value.id,
+    name: value.name,
+    host: value.host,
+    port: value.port,
+    username: value.username,
+    authMethod: value.authMethod,
+    initialCommand: value.initialCommand,
+    termType: value.termType,
+    encoding: value.encoding,
+    fingerprint: value.fingerprint,
+    updatedAt: value.updatedAt,
+  };
+  if (value.authMethod === 'password' && value.passwordBase64) profile.passwordBase64 = value.passwordBase64;
+  if (profile.passwordBase64) {
+    try {
+      const decoded = decodePassword(profile.passwordBase64);
+      if (decoded.length > 4096 || encodePassword(decoded) !== profile.passwordBase64) delete profile.passwordBase64;
+    } catch {
+      delete profile.passwordBase64;
+    }
+  }
+  return profile;
+}
+
 function loadProfiles(): SavedProfile[] {
   try {
     const parsed: unknown = JSON.parse(localStorage.getItem(PROFILE_STORAGE_KEY) ?? '[]');
-    return Array.isArray(parsed) ? parsed.filter(isSavedProfile).slice(0, MAX_PROFILES) : [];
+    return Array.isArray(parsed)
+      ? parsed.map(sanitizeSavedProfile).filter((profile): profile is SavedProfile => profile !== null).slice(0, MAX_PROFILES)
+      : [];
   } catch {
     return [];
   }
@@ -452,9 +489,14 @@ function loadHostKeys(): Record<string, string> {
   }
 }
 
-function persistProfiles(): void {
-  try { localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(profiles.slice(0, MAX_PROFILES))); }
-  catch { toast(bilingual('此浏览器无法保存连接配置。', 'Profiles could not be saved in this browser.'), 'error'); }
+function persistProfiles(): boolean {
+  try {
+    localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(profiles.slice(0, MAX_PROFILES)));
+    return true;
+  } catch {
+    toast(bilingual('此浏览器无法保存连接配置。', 'Profiles could not be saved in this browser.'), 'error');
+    return false;
+  }
 }
 
 function persistHostKeys(): void {
@@ -477,6 +519,7 @@ function setAuthMethod(method: AuthMethod): void {
 function resetPasswordField(): void {
   ui.password.value = '';
   ui.password.type = 'password';
+  passwordDirty = false;
   updateRevealPasswordButton();
 }
 
@@ -490,6 +533,19 @@ function clearCredentials(): void {
   resetPasswordField();
   clearPrivateKeyFields();
   ui.accessToken.value = '';
+}
+
+function encodePassword(password: string): string {
+  const bytes = new TextEncoder().encode(password);
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
+function decodePassword(encoded: string): string {
+  const binary = atob(encoded);
+  const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
 }
 
 function normalizeHost(host: string): string {
@@ -509,10 +565,11 @@ function applyFormDefaults(): void {
 
 function readProfileFromForm(): SavedProfile {
   applyFormDefaults();
+  if (ui.password.value.length > 4096) throw new Error(bilingual('密码不能超过 4096 个字符。', 'Password cannot exceed 4096 characters.'));
   const host = normalizeHost(ui.host.value);
   const port = Number(ui.port.value);
   const username = ui.username.value.trim();
-  return {
+  const profile: SavedProfile = {
     id: ui.profileId.value || crypto.randomUUID(),
     name: ui.profileName.value.trim() || host,
     host,
@@ -525,6 +582,12 @@ function readProfileFromForm(): SavedProfile {
     fingerprint: ui.fingerprint.value.trim(),
     updatedAt: Date.now(),
   };
+  if (profile.authMethod === 'password' && ui.password.value) {
+    profile.passwordBase64 = encodePassword(ui.password.value);
+  } else if (profile.authMethod === 'password' && ui.profileId.value && !passwordDirty) {
+    profile.passwordBase64 = profiles.find((item) => item.id === ui.profileId.value)?.passwordBase64;
+  }
+  return profile;
 }
 
 function validateProfileFields(): string | null {
@@ -574,6 +637,14 @@ function applyProfile(profile: SavedProfile): void {
   ui.encoding.value = profile.encoding;
   ui.fingerprint.value = profile.fingerprint || hostKeys[targetKey(profile.host, profile.port, profile.username)] || '';
   setAuthMethod(profile.authMethod);
+  if (profile.authMethod === 'password' && profile.passwordBase64) {
+    try {
+      ui.password.value = decodePassword(profile.passwordBase64);
+    } catch {
+      toast(bilingual('已保存的密码无法解码，请重新输入并保存。', 'The saved password could not be decoded. Enter and save it again.'), 'error');
+    }
+  }
+  passwordDirty = false;
   renderProfiles();
 }
 
@@ -599,16 +670,25 @@ function saveCurrentProfile(): void {
     showFormError(error);
     return;
   }
-  const profile = readProfileFromForm();
+  let profile: SavedProfile;
+  try {
+    profile = readProfileFromForm();
+  } catch (profileError) {
+    showFormError(profileError instanceof Error ? profileError.message : String(profileError));
+    return;
+  }
   if (!ui.profileName.value.trim()) ui.profileName.value = profile.name;
   const index = profiles.findIndex((item) => item.id === profile.id);
   if (index >= 0) profiles[index] = profile;
   else profiles.unshift(profile);
   profiles = profiles.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, MAX_PROFILES);
   ui.profileId.value = profile.id;
-  persistProfiles();
+  if (!persistProfiles()) return;
+  passwordDirty = false;
   renderProfiles();
-  toast(bilingual('连接配置已保存，凭据未被存储。', 'Connection profile saved. Credentials were not stored.'));
+  toast(profile.passwordBase64
+    ? bilingual('连接配置和 Base64 编码的密码已保存在此浏览器。', 'Connection profile and Base64-encoded password saved in this browser.')
+    : bilingual('连接配置已保存。', 'Connection profile saved.'));
 }
 
 function deleteProfile(id: string): void {
@@ -1215,6 +1295,7 @@ ui.form.addEventListener('submit', (formEvent) => {
 ui.newProfile.addEventListener('click', clearForm);
 ui.saveProfile.addEventListener('click', saveCurrentProfile);
 ui.shareLink.addEventListener('click', copySafeLink);
+ui.password.addEventListener('input', () => { passwordDirty = true; });
 ui.revealPassword.addEventListener('click', () => {
   const reveal = ui.password.type === 'password';
   ui.password.type = reveal ? 'text' : 'password';
