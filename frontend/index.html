@@ -239,29 +239,26 @@
         </aside>
 
         <main class="workspace">
-          <section
-            class="session-strip"
-            aria-label="实时连接状态"
-            data-i18n-aria-label-zh="实时连接状态"
-            data-i18n-aria-label-en="Live connection status"
-          >
-            <div class="session-target">
-              <span class="live-orb" id="live-orb"></span>
-              <div>
-                <strong id="session-title">无活动会话</strong>
-                <span id="session-subtitle">选择目标并连接</span>
-              </div>
-            </div>
-            <div class="session-metrics">
-              <div><span data-i18n-zh="延迟" data-i18n-en="RTT">延迟</span><strong id="metric-rtt">--</strong></div>
-              <div><span data-i18n-zh="时长" data-i18n-en="UPTIME">时长</span><strong id="metric-uptime">00:00</strong></div>
-              <div><span data-i18n-zh="主机密钥" data-i18n-en="HOST KEY">主机密钥</span><strong id="metric-host-key">--</strong></div>
-            </div>
-          </section>
-
           <section id="terminal-card" class="terminal-card">
             <div class="terminal-toolbar">
               <div class="window-controls" aria-hidden="true"><i></i><i></i><i></i></div>
+              <div
+                class="session-target"
+                aria-label="实时连接状态"
+                data-i18n-aria-label-zh="实时连接状态"
+                data-i18n-aria-label-en="Live connection status"
+              >
+                <span class="live-orb" id="live-orb"></span>
+                <div>
+                  <strong id="session-title">无活动会话</strong>
+                  <span id="session-subtitle">选择目标并连接</span>
+                </div>
+              </div>
+              <div class="session-metrics">
+                <div><span data-i18n-zh="延迟" data-i18n-en="RTT">延迟</span><strong id="metric-rtt">--</strong></div>
+                <div><span data-i18n-zh="时长" data-i18n-en="UPTIME">时长</span><strong id="metric-uptime">00:00</strong></div>
+                <div><span data-i18n-zh="主机密钥" data-i18n-en="HOST KEY">主机密钥</span><strong id="metric-host-key">--</strong></div>
+              </div>
               <div class="terminal-actions">
                 <button id="clear-terminal" class="toolbar-button" type="button" data-i18n-zh="清屏" data-i18n-en="Clear">清屏</button>
                 <button id="fullscreen-terminal" class="toolbar-button" type="button" data-i18n-zh="全屏" data-i18n-en="Fullscreen">全屏</button>

@@ -858,8 +858,7 @@ button:disabled {
   display: grid;
   min-width: 0;
   min-height: 0;
-  grid-template-rows: auto minmax(0, 1fr);
-  gap: 14px;
+  grid-template-rows: minmax(0, 1fr);
   overflow: hidden;
   padding: 18px;
   background:
@@ -867,21 +866,12 @@ button:disabled {
     var(--bg);
 }
 
-.session-strip {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  justify-content: space-between;
-  gap: 18px;
-  padding: 11px 14px;
-  border: 1px solid var(--border);
-  border-radius: 11px;
-  background: var(--surface);
-}
-
 .session-target {
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
   min-width: 0;
-  gap: 11px;
+  gap: 10px;
 }
 
 .session-target > div {
@@ -897,18 +887,20 @@ button:disabled {
 }
 
 .session-target strong {
-  margin-bottom: 3px;
+  margin-bottom: 2px;
+  color: #c5d2db;
   font-size: 12px;
 }
 
 .session-target span {
-  color: var(--muted);
+  color: #6f818d;
   font-family: var(--mono);
   font-size: 9px;
 }
 
 .session-metrics {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
   gap: 4px;
 }
@@ -916,7 +908,7 @@ button:disabled {
 .session-metrics > div {
   min-width: 82px;
   padding: 0 10px;
-  border-left: 1px solid var(--border-soft);
+  border-left: 1px solid #1c2932;
 }
 
 .session-metrics span,
@@ -927,8 +919,8 @@ button:disabled {
 }
 
 .session-metrics span {
-  margin-bottom: 3px;
-  color: var(--muted-2);
+  margin-bottom: 2px;
+  color: #5e707d;
   font-size: 7px;
   font-weight: 700;
   letter-spacing: 0.08em;
@@ -936,7 +928,7 @@ button:disabled {
 
 .session-metrics strong {
   overflow: hidden;
-  color: var(--muted);
+  color: #8799a5;
   font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -955,10 +947,9 @@ button:disabled {
 }
 
 .terminal-toolbar {
-  display: grid;
-  grid-template-columns: 74px 1fr;
+  display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   padding: 0 11px;
   border-bottom: 1px solid #1c2932;
   background: #101820;
@@ -967,6 +958,7 @@ button:disabled {
 
 .window-controls {
   display: flex;
+  flex: 0 0 auto;
   gap: 6px;
 }
 
@@ -986,8 +978,9 @@ button:disabled {
 }
 
 .terminal-actions {
+  display: flex;
+  flex: 0 0 auto;
   gap: 5px;
-  justify-self: end;
 }
 
 .terminal-actions .toolbar-button {
@@ -1375,12 +1368,7 @@ button:disabled {
 
   .workspace {
     height: 100%;
-    gap: 8px;
     padding: 8px;
-  }
-
-  .session-strip {
-    padding: 9px 10px;
   }
 
   .session-metrics > div {
@@ -1394,10 +1382,6 @@ button:disabled {
 
   .terminal-card {
     border-radius: 9px;
-  }
-
-  .terminal-toolbar {
-    grid-template-columns: 34px minmax(0, 1fr) auto;
   }
 
   .window-controls i {
