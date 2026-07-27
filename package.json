@@ -5,14 +5,14 @@
   "type": "module",
   "description": "A dependency-free-at-runtime SSH terminal for Cloudflare Workers",
   "scripts": {
-    "dev": "npm run build:web && wrangler dev",
+    "dev": "wrangler dev",
     "dev:web": "vite --config vite.config.ts",
     "build:web": "vite build --config vite.config.ts",
     "typecheck": "tsc -p tsconfig.worker.json --noEmit && tsc -p tsconfig.frontend.json --noEmit",
     "test": "vitest run",
     "test:edge": "vitest run --config vitest.edge.config.ts",
-    "check": "npm run typecheck && npm run test && npm run test:edge && npm run build:web && wrangler deploy --dry-run --outdir .wrangler/build",
-    "deploy": "npm run build:web && wrangler deploy"
+    "check": "npm run typecheck && npm run test && npm run test:edge && wrangler deploy --dry-run --outdir .wrangler/build",
+    "deploy": "wrangler deploy"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",

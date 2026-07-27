@@ -173,7 +173,7 @@ npm run build:web
 npm run deploy
 ```
 
-`deploy` 会先把前端构建到 `dist/`，再由 Wrangler 上传 Worker、静态资源、Durable Object binding 和 migration。成功后终端会输出类似地址：
+`deploy` 会调用 Wrangler；`wrangler.toml` 中的构建钩子先把前端构建到 `dist/`，再上传 Worker、静态资源、Durable Object binding 和 migration。成功后终端会输出类似地址：
 
 ```text
 https://cf-workers-webssh.<your-subdomain>.workers.dev
@@ -310,12 +310,12 @@ workers_dev = false
 1. 将项目 Fork 到自己的 GitHub 或 GitLab 账户。
 2. 在 Cloudflare Dashboard 中进入 `Workers & Pages`，选择创建 Worker 并导入 Git 仓库。
 3. 项目根目录使用 `/`，Node.js 版本选择 22 或更高。
-4. Build command 设置为 `npm run build:web`。
-5. Deploy command 设置为 `npx wrangler deploy`。
+4. Build command 留空；`wrangler.toml` 中的 `[build]` 会自动执行 `npm run build:web`。
+5. Deploy command 设置为 `npx wrangler deploy` 或 `npm run deploy`，两者都会通过同一个 Wrangler 构建钩子生成前端资源。
 6. 首次部署完成后，在 Worker 的 `Settings` -> `Variables and Secrets` 中新增加密 Secret：`ACCESS_TOKEN`。
 7. 再次触发部署，并按前文方式检查 `/api/health` 与实际 SSH 连接。
 
-Dashboard 的菜单名称可能随 Cloudflare UI 更新而略有变化。关键点是：`wrangler.toml` 必须参与部署、前端必须先生成 `dist/`、`ACCESS_TOKEN` 必须是运行时 Secret 而不是公开构建变量。
+Dashboard 的菜单名称可能随 Cloudflare UI 更新而略有变化。关键点是：`wrangler.toml` 必须参与部署，其 `[build]` 配置会在 Wrangler 读取 `dist/` 前生成前端资源；`ACCESS_TOKEN` 必须是运行时 Secret 而不是公开构建变量。
 
 ## 本地开发
 
@@ -351,7 +351,7 @@ CONNECT_TIMEOUT_MS=10000
 npm run dev
 ```
 
-该命令先构建前端，再启动 Wrangler，默认访问 `http://localhost:8787`。本地回环地址允许 HTTP，生产边缘请求仍强制 HTTPS。
+该命令启动 Wrangler，Wrangler 会先通过 `[build]` 构建前端，默认访问 `http://localhost:8787`。本地回环地址允许 HTTP，生产边缘请求仍强制 HTTPS。
 
 如需前端热更新，使用两个终端：
 
@@ -377,14 +377,14 @@ npm run dev:web
 
 | 命令 | 作用 |
 | --- | --- |
-| `npm run dev` | 构建前端并启动本地 Worker |
+| `npm run dev` | 通过 Wrangler 构建前端并启动本地 Worker |
 | `npm run dev:web` | 启动 Vite 前端开发服务器 |
 | `npm run build:web` | 将前端构建到 `dist/` |
 | `npm run typecheck` | 检查 Worker 与前端 TypeScript |
 | `npm test` | 运行 Node 环境单元测试 |
 | `npm run test:edge` | 在 Cloudflare Workers 测试池运行边缘加密与安全测试 |
 | `npm run check` | 执行全部检查、构建和部署 dry-run |
-| `npm run deploy` | 构建前端并部署到 Cloudflare |
+| `npm run deploy` | 通过 Wrangler 构建前端并部署到 Cloudflare |
 
 ## 项目结构
 
