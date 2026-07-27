@@ -12,6 +12,12 @@ export function secureResponse(response: Response): Response {
 }
 
 export function corsResponse(response: Response): Response {
+  // WebSocket 升级响应（101）必须原样返回，不能用 new Response 重新包装：
+  // 复制 Sec-WebSocket-* / Upgrade / Connection 等握手头并重建 Response 会
+  // 破坏 Cloudflare 运行时与浏览器之间的升级握手，导致前端概率性出现
+  // "WebSocket 传输错误"（de005b5 引入的回归）。WebSocket 协议本身不受
+  // 同源/CORS 约束，101 响应无需附加 CORS 头。
+  if (response.webSocket) return response;
   const headers = new Headers(response.headers);
   headers.set('Access-Control-Allow-Origin', '*');
   headers.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -20,7 +26,6 @@ export function corsResponse(response: Response): Response {
     status: response.status,
     statusText: response.statusText,
     headers,
-    webSocket: response.webSocket,
   });
 }
 

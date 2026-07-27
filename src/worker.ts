@@ -73,6 +73,8 @@ export default {
       }
       if (url.pathname === '/api/ssh') {
         if (request.method !== 'GET') return corsResponse(jsonError('Method not allowed', 405));
+        // 成功时 sshUpgrade 返回 101 WebSocket 升级响应，corsResponse 内部会原样
+        // 放行（不重新包装）；失败时返回 JSON 错误，正常附加 CORS 头。
         return corsResponse(await sshUpgrade(request, env));
       }
       if (isApiRequest) return corsResponse(jsonError('Not found', 404));
