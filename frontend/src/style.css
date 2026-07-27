@@ -53,6 +53,10 @@
   box-sizing: border-box;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 html,
 body,
 #app {
@@ -198,6 +202,63 @@ button:disabled {
 .icon-button:hover {
   background: var(--surface-2);
   color: var(--text);
+}
+
+.language-icon {
+  position: relative;
+  display: block;
+  width: 23px;
+  height: 21px;
+}
+
+.language-icon span {
+  position: absolute;
+  display: grid;
+  width: 16px;
+  height: 16px;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.language-icon span:first-child {
+  top: 0;
+  left: 0;
+}
+
+.language-icon span:last-child {
+  right: 0;
+  bottom: 0;
+  font-family: var(--mono);
+}
+
+#language-toggle[data-language='zh-CN'] .language-icon span:first-child,
+#language-toggle[data-language='en'] .language-icon span:last-child {
+  z-index: 2;
+  border-color: color-mix(in srgb, var(--accent) 52%, var(--border));
+  background: var(--surface-2);
+  color: var(--accent);
+}
+
+#language-toggle[data-language='zh-CN'] .language-icon span:last-child,
+#language-toggle[data-language='en'] .language-icon span:first-child {
+  z-index: 1;
+  color: var(--muted);
+}
+
+#language-toggle:hover .language-icon span {
+  color: var(--text);
+}
+
+#language-toggle:hover[data-language='zh-CN'] .language-icon span:first-child,
+#language-toggle:hover[data-language='en'] .language-icon span:last-child {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .icon-button.bordered {

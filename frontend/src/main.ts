@@ -5,6 +5,13 @@ import './style.css';
 
 type AuthMethod = 'password' | 'publickey';
 type ConnectionState = 'idle' | 'connecting' | 'connected' | 'error';
+type Language = 'zh-CN' | 'en';
+type Translation = readonly [zh: string, en: string];
+
+interface LocalizedMessage {
+  zh: string;
+  en: string;
+}
 
 interface SavedProfile {
   id: string;
@@ -80,41 +87,96 @@ declare global {
 const PROFILE_STORAGE_KEY = 'workers-webssh.profiles.v1';
 const HOST_KEY_STORAGE_KEY = 'workers-webssh.hostkeys.v1';
 const THEME_STORAGE_KEY = 'workers-webssh.theme';
+const LANGUAGE_STORAGE_KEY = 'workers-webssh.language';
 const MAX_PROFILES = 30;
 const MAX_KEY_BYTES = 65_536;
 const PING_INTERVAL_MS = 25_000;
 
-function bilingual(zh: string, en: string): string {
-  return `${zh} / ${en}`;
+function loadLanguage(): Language {
+  try {
+    const stored = localStorage.getItem(LANGUAGE_STORAGE_KEY);
+    if (stored === 'zh-CN' || stored === 'en') return stored;
+  } catch {
+    // Fall back to the browser language when storage is unavailable.
+  }
+  return navigator.language.toLowerCase().startsWith('zh') ? 'zh-CN' : 'en';
 }
 
-const EVENT_LABELS: Record<string, string> = {
-  session: bilingual('会话', 'session'),
-  connect: bilingual('连接', 'connect'),
-  transport: bilingual('传输', 'transport'),
-  authorization: bilingual('授权', 'authorization'),
-  disconnect: bilingual('断开', 'disconnect'),
-  protocol: bilingual('协议', 'protocol'),
-  status: bilingual('状态', 'status'),
-  ready: bilingual('就绪', 'ready'),
-  error: bilingual('错误', 'error'),
-  debug: bilingual('调试', 'debug'),
-  'host-key': bilingual('主机密钥', 'host key'),
+let currentLanguage = loadLanguage();
+const generatedTranslations = new Map<string, LocalizedMessage>();
+
+function bilingual(zh: string, en: string): string {
+  const translation = localized(zh, en);
+  generatedTranslations.set(zh, translation);
+  generatedTranslations.set(en, translation);
+  return currentLanguage === 'zh-CN' ? zh : en;
+}
+
+function localized(zh: string, en: string): LocalizedMessage {
+  return { zh, en };
+}
+
+function localize(message: LocalizedMessage): string {
+  return bilingual(message.zh, message.en);
+}
+
+const STATIC_MESSAGE_TRANSLATIONS: Record<string, string> = {
+  '请输入有效的主机名或 IP 地址。': 'Enter a valid hostname or IP address.',
+  '端口必须介于 1 和 65535 之间。': 'Port must be between 1 and 65535.',
+  '请输入有效的 SSH 用户名。': 'Enter a valid SSH username.',
+  '主机指纹必须使用 SHA256:base64 格式。': 'Host fingerprint must use the SHA256:base64 format.',
+  '请粘贴或选择未加密的 OpenSSH 私钥。': 'Paste or choose an unencrypted OpenSSH private key.',
+  '私钥大于 64 KiB。': 'The private key is larger than 64 KiB.',
+  '仅支持未加密的 OpenSSH 私钥。': 'Only unencrypted OpenSSH private keys are supported.',
+  '请检查必填项和字段格式。': 'Check the required fields and their formats.',
 };
 
-const SERVER_EVENT_MESSAGES: Record<string, string> = {
-  version_exchange: bilingual('正在交换 SSH 协议版本', 'Exchanging SSH protocol versions'),
-  version_ready: bilingual('版本交换完成，正在协商密钥', 'Version exchange complete; negotiating keys'),
-  tcp_connecting: bilingual('正在连接 SSH 服务器', 'Connecting to the SSH server'),
-  authenticating: bilingual('加密传输已建立，正在认证', 'Encrypted transport established; authenticating'),
-  host_key_confirmation: bilingual('发送凭据前请确认此主机密钥', 'Confirm this host key before credentials are sent'),
-  auth_success: bilingual('SSH 认证成功，正在打开终端', 'SSH authentication succeeded; opening terminal'),
-  shell_ready: bilingual('Shell 已就绪', 'Shell is ready'),
-  ready: bilingual('交互式 Shell 已就绪', 'Interactive shell ready'),
-  remote_closed: bilingual('SSH 服务器已关闭连接', 'The SSH server closed the connection'),
-  remote_eof: bilingual('SSH 服务器已结束输出', 'SSH server finished sending output'),
-  session_ended: bilingual('SSH 会话已结束', 'SSH session ended'),
-  keepalive_timeout: bilingual('SSH 保活响应超时', 'SSH keepalive timed out'),
+function messageTranslation(message: string, alternate?: string): LocalizedMessage {
+  if (alternate) return currentLanguage === 'zh-CN' ? localized(message, alternate) : localized(alternate, message);
+  const generated = generatedTranslations.get(message);
+  if (generated) return generated;
+  const english = STATIC_MESSAGE_TRANSLATIONS[message];
+  if (english) return localized(message, english);
+  const staticChinese = Object.entries(STATIC_MESSAGE_TRANSLATIONS).find(([, value]) => value === message)?.[0];
+  if (staticChinese) return localized(staticChinese, message);
+  const chinese = SERVER_MESSAGE_TRANSLATIONS[message];
+  if (chinese) return localized(chinese, message);
+  const serverEnglish = Object.entries(SERVER_MESSAGE_TRANSLATIONS).find(([, value]) => value === message)?.[0];
+  if (serverEnglish) return localized(message, serverEnglish);
+  return localized(message, message);
+}
+
+function translate([zh, en]: Translation): string {
+  return bilingual(zh, en);
+}
+
+const EVENT_LABELS: Record<string, Translation> = {
+  session: ['会话', 'session'],
+  connect: ['连接', 'connect'],
+  transport: ['传输', 'transport'],
+  authorization: ['授权', 'authorization'],
+  disconnect: ['断开', 'disconnect'],
+  protocol: ['协议', 'protocol'],
+  status: ['状态', 'status'],
+  ready: ['就绪', 'ready'],
+  error: ['错误', 'error'],
+  debug: ['调试', 'debug'],
+  'host-key': ['主机密钥', 'host key'],
+};
+
+const SERVER_EVENT_MESSAGES: Record<string, Translation> = {
+  version_exchange: ['正在交换 SSH 协议版本', 'Exchanging SSH protocol versions'],
+  version_ready: ['版本交换完成，正在协商密钥', 'Version exchange complete; negotiating keys'],
+  tcp_connecting: ['正在连接 SSH 服务器', 'Connecting to the SSH server'],
+  authenticating: ['加密传输已建立，正在认证', 'Encrypted transport established; authenticating'],
+  host_key_confirmation: ['发送凭据前请确认此主机密钥', 'Confirm this host key before credentials are sent'],
+  auth_success: ['SSH 认证成功，正在打开终端', 'SSH authentication succeeded; opening terminal'],
+  shell_ready: ['Shell 已就绪', 'Shell is ready'],
+  ready: ['交互式 Shell 已就绪', 'Interactive shell ready'],
+  remote_closed: ['SSH 服务器已关闭连接', 'The SSH server closed the connection'],
+  remote_eof: ['SSH 服务器已结束输出', 'SSH server finished sending output'],
+  session_ended: ['SSH 会话已结束', 'SSH session ended'],
+  keepalive_timeout: ['SSH 保活响应超时', 'SSH keepalive timed out'],
 };
 
 const SERVER_MESSAGE_TRANSLATIONS: Record<string, string> = {
@@ -149,12 +211,12 @@ const SERVER_MESSAGE_TRANSLATIONS: Record<string, string> = {
 
 function bilingualServerMessage(message: string | undefined, eventName?: string, fallback?: string, summary = 'SSH 状态更新'): string {
   const english = message?.trim() || fallback || eventName || 'SSH status';
-  if (/[\u3400-\u9fff].* \/ /.test(english)) return english;
   const eventText = eventName ? SERVER_EVENT_MESSAGES[eventName] : undefined;
-  if (eventText && (!message || message === eventName || eventText.endsWith(` / ${english}`))) return eventText;
+  if (eventText && (!message || message === eventName || eventText[1] === english)) return translate(eventText);
+  if (currentLanguage === 'en') return english;
+  if (/[\u3400-\u9fff]/.test(english)) return english;
   const chinese = SERVER_MESSAGE_TRANSLATIONS[english];
-  if (chinese) return bilingual(chinese, english);
-  return bilingual(summary, english);
+  return chinese ?? english ?? summary;
 }
 
 function element<T extends HTMLElement>(id: string): T {
@@ -194,6 +256,7 @@ const ui = {
   shareLink: element<HTMLButtonElement>('share-link'),
   globalStatus: element<HTMLElement>('global-status'),
   globalStatusLabel: element<HTMLElement>('global-status-label'),
+  languageToggle: element<HTMLButtonElement>('language-toggle'),
   themeToggle: element<HTMLButtonElement>('theme-toggle'),
   sessionTitle: element<HTMLElement>('session-title'),
   sessionSubtitle: element<HTMLElement>('session-subtitle'),
@@ -224,6 +287,56 @@ const ui = {
   acceptHostKey: element<HTMLButtonElement>('accept-host-key'),
 };
 
+function updateRevealPasswordButton(): void {
+  const revealed = ui.password.type === 'text';
+  ui.revealPassword.textContent = revealed ? bilingual('隐藏', 'Hide') : bilingual('显示', 'Show');
+  ui.revealPassword.setAttribute('aria-label', revealed
+    ? bilingual('隐藏密码', 'Hide password')
+    : bilingual('显示密码', 'Show password'));
+}
+
+function applyLanguage(language: Language, persist = false): void {
+  currentLanguage = language;
+  document.documentElement.lang = language;
+  document.documentElement.dataset.language = language;
+
+  for (const node of document.querySelectorAll<HTMLElement>('[data-i18n-zh][data-i18n-en]')) {
+    node.textContent = language === 'zh-CN' ? node.dataset.i18nZh! : node.dataset.i18nEn!;
+  }
+  for (const node of document.querySelectorAll<HTMLElement>('[data-i18n-placeholder-zh][data-i18n-placeholder-en]')) {
+    node.setAttribute('placeholder', language === 'zh-CN' ? node.dataset.i18nPlaceholderZh! : node.dataset.i18nPlaceholderEn!);
+  }
+  for (const node of document.querySelectorAll<HTMLElement>('[data-i18n-aria-label-zh][data-i18n-aria-label-en]')) {
+    node.setAttribute('aria-label', language === 'zh-CN' ? node.dataset.i18nAriaLabelZh! : node.dataset.i18nAriaLabelEn!);
+  }
+  for (const node of document.querySelectorAll<HTMLElement>('[data-i18n-content-zh][data-i18n-content-en]')) {
+    node.setAttribute('content', language === 'zh-CN' ? node.dataset.i18nContentZh! : node.dataset.i18nContentEn!);
+  }
+
+  const toggleLabel = language === 'zh-CN' ? '切换到英文' : 'Switch to Chinese';
+  ui.languageToggle.dataset.language = language;
+  ui.languageToggle.setAttribute('aria-label', toggleLabel);
+  ui.languageToggle.title = toggleLabel;
+  updateRevealPasswordButton();
+  if (!ui.keyFile.files?.length) ui.keyFileName.textContent = bilingual('未选择文件', 'No file selected');
+  ui.sessionSubtitle.textContent = localize(currentSessionSubtitle);
+  ui.eventMessage.textContent = localize(currentEventMessage);
+  if (currentFormError && !ui.formError.hidden) ui.formError.textContent = localize(currentFormError);
+  for (const line of ui.eventLog.querySelectorAll<HTMLElement>('.event-line')) {
+    const category = line.dataset.category ?? 'session';
+    const label = line.querySelector<HTMLElement>('strong');
+    const copy = line.querySelector<HTMLElement>('span');
+    if (label) label.textContent = EVENT_LABELS[category] ? translate(EVENT_LABELS[category]) : bilingual('SSH 事件', category);
+    if (copy?.dataset.messageZh && copy.dataset.messageEn) {
+      copy.textContent = bilingual(copy.dataset.messageZh, copy.dataset.messageEn);
+    }
+  }
+
+  if (persist) {
+    try { localStorage.setItem(LANGUAGE_STORAGE_KEY, language); } catch { /* Language still applies for this page. */ }
+  }
+}
+
 let profiles = loadProfiles();
 let hostKeys = loadHostKeys();
 let socket: WebSocket | null = null;
@@ -242,6 +355,9 @@ let awaitingHostKeyDecision = false;
 let connectGeneration = 0;
 let authorizationAbort: AbortController | null = null;
 let currentExpectedFingerprint = '';
+let currentSessionSubtitle: LocalizedMessage = { zh: '选择目标并连接', en: 'Choose a target and connect' };
+let currentEventMessage: LocalizedMessage = { zh: 'Worker 运行时待命', en: 'Worker runtime standing by' };
+let currentFormError: LocalizedMessage | null = null;
 
 const terminal = new Terminal({
   allowProposedApi: false,
@@ -293,7 +409,7 @@ function isSavedProfile(value: unknown): value is SavedProfile {
   return (
     typeof item.id === 'string' &&
     typeof item.name === 'string' &&
-    item.name.length <= 64 &&
+    item.name.length >= 1 && item.name.length <= 253 &&
     typeof item.host === 'string' &&
     item.host.length >= 1 && item.host.length <= 253 && !/[\s/?#]/.test(item.host) &&
     typeof item.port === 'number' &&
@@ -361,8 +477,7 @@ function setAuthMethod(method: AuthMethod): void {
 function resetPasswordField(): void {
   ui.password.value = '';
   ui.password.type = 'password';
-  ui.revealPassword.textContent = bilingual('显示', 'Show');
-  ui.revealPassword.setAttribute('aria-label', bilingual('显示密码', 'Show password'));
+  updateRevealPasswordButton();
 }
 
 function clearPrivateKeyFields(): void {
@@ -387,13 +502,19 @@ function targetKey(host = normalizeHost(ui.host.value), port = Number(ui.port.va
   return `${username}@${host.toLowerCase()}:${port}`;
 }
 
+function applyFormDefaults(): void {
+  if (!ui.username.value.trim()) ui.username.value = 'root';
+  if (!ui.port.value.trim() && !ui.port.validity.badInput) ui.port.value = '22';
+}
+
 function readProfileFromForm(): SavedProfile {
+  applyFormDefaults();
   const host = normalizeHost(ui.host.value);
   const port = Number(ui.port.value);
   const username = ui.username.value.trim();
   return {
     id: ui.profileId.value || crypto.randomUUID(),
-    name: ui.profileName.value.trim() || `${username || 'ssh'}@${host || 'host'}`,
+    name: ui.profileName.value.trim() || host,
     host,
     port,
     username,
@@ -407,6 +528,7 @@ function readProfileFromForm(): SavedProfile {
 }
 
 function validateProfileFields(): string | null {
+  applyFormDefaults();
   const host = normalizeHost(ui.host.value);
   const port = Number(ui.port.value);
   const username = ui.username.value.trim();
@@ -431,6 +553,7 @@ function validateConnection(): string | null {
 }
 
 function validateConnectForm(): string | null {
+  applyFormDefaults();
   const browserInvalid = [...ui.form.elements].find((control): control is HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement =>
     control instanceof HTMLInputElement || control instanceof HTMLSelectElement || control instanceof HTMLTextAreaElement
       ? !control.validity.valid
@@ -459,10 +582,12 @@ function clearForm(): void {
   clearCredentials();
   ui.profileId.value = '';
   ui.port.value = '22';
+  ui.username.value = 'root';
   ui.termType.value = 'xterm-256color';
   ui.encoding.value = 'utf-8';
   ui.fingerprint.value = '';
   ui.formError.hidden = true;
+  currentFormError = null;
   setAuthMethod('password');
   renderProfiles();
   ui.profileName.focus();
@@ -475,6 +600,7 @@ function saveCurrentProfile(): void {
     return;
   }
   const profile = readProfileFromForm();
+  if (!ui.profileName.value.trim()) ui.profileName.value = profile.name;
   const index = profiles.findIndex((item) => item.id === profile.id);
   if (index >= 0) profiles[index] = profile;
   else profiles.unshift(profile);
@@ -534,8 +660,9 @@ function renderProfiles(): void {
   }
 }
 
-function showFormError(message: string): void {
-  ui.formError.textContent = message;
+function showFormError(message: string, alternate?: string): void {
+  currentFormError = messageTranslation(message, alternate);
+  ui.formError.textContent = localize(currentFormError);
   ui.formError.hidden = false;
 }
 
@@ -564,16 +691,21 @@ function setState(state: ConnectionState, label?: string): void {
   ui.disconnect.disabled = state !== 'connecting' && state !== 'connected';
 }
 
-function event(message: string, category = 'session', error = false): void {
-  ui.eventMessage.textContent = message;
+function event(message: string, category = 'session', error = false, alternate?: string): void {
+  const eventTranslation = messageTranslation(message, alternate);
+  currentEventMessage = eventTranslation;
+  ui.eventMessage.textContent = localize(currentEventMessage);
   const line = document.createElement('div');
   line.className = `event-line${error ? ' error' : ''}`;
+  line.dataset.category = category;
   const time = document.createElement('time');
   time.textContent = new Date().toLocaleTimeString([], { hour12: false });
   const type = document.createElement('strong');
-  type.textContent = EVENT_LABELS[category] ?? bilingual('SSH 事件', category);
+  type.textContent = EVENT_LABELS[category] ? translate(EVENT_LABELS[category]) : bilingual('SSH 事件', category);
   const copy = document.createElement('span');
   copy.textContent = message;
+  copy.dataset.messageZh = eventTranslation.zh;
+  copy.dataset.messageEn = eventTranslation.en;
   line.append(time, type, copy);
   ui.eventLog.append(line);
   while (ui.eventLog.childElementCount > 100) ui.eventLog.firstElementChild?.remove();
@@ -645,6 +777,7 @@ function markReady(message = bilingual('交互式 Shell 已就绪', 'Interactive
   if (connectionState === 'connected') return;
   setState('connected');
   startTimers();
+  currentSessionSubtitle = messageTranslation(message);
   ui.sessionSubtitle.textContent = message;
   event(message, 'ready');
   if (currentInitialCommand && !initialCommandSent) {
@@ -746,6 +879,7 @@ function handleServerMessage(message: ServerMessage): void {
   if (type === 'status') {
     const text = bilingualServerMessage(message.message, message.event, 'SSH handshake in progress');
     event(text, message.event ?? 'status');
+    currentSessionSubtitle = messageTranslation(text);
     ui.sessionSubtitle.textContent = text;
     if (message.event === 'shell_ready' || message.event === 'ready') markReady(text);
   }
@@ -793,6 +927,7 @@ async function issueTicket(accessToken: string, signal: AbortSignal): Promise<{ 
 
 async function connect(): Promise<void> {
   if (connectionState === 'connecting' || connectionState === 'connected') return;
+  applyFormDefaults();
   const validationError = validateConnectForm();
   if (validationError) {
     showFormError(validationError);
@@ -804,6 +939,7 @@ async function connect(): Promise<void> {
   }
 
   ui.formError.hidden = true;
+  currentFormError = null;
   const generation = ++connectGeneration;
   const abortController = new AbortController();
   authorizationAbort?.abort();
@@ -826,11 +962,12 @@ async function connect(): Promise<void> {
   awaitingHostKeyDecision = false;
   decoder = createDecoder(ui.encoding.value);
   ui.sessionTitle.textContent = `${username}@${host}:${port}`;
-  ui.sessionSubtitle.textContent = bilingual('正在授权 Worker 会话...', 'Authorizing Worker session...');
+  currentSessionSubtitle = localized('正在授权 Worker 会话...', 'Authorizing Worker session...');
+  ui.sessionSubtitle.textContent = localize(currentSessionSubtitle);
   ui.metricEdge.textContent = '--';
   ui.metricRtt.textContent = '--';
   ui.metricHostKey.textContent = '--';
-  ui.terminalLabel.textContent = `终端 / terminal · ${username}@${host}`;
+  ui.terminalLabel.textContent = `${bilingual('终端', 'terminal')} · ${username}@${host}`;
   event(bilingual(`正在连接 ${username}@${host}:${port}`, `Starting ${username}@${host}:${port}`), 'connect');
 
   try {
@@ -873,7 +1010,8 @@ async function connect(): Promise<void> {
       else config.privateKey = privateKey;
       if (pinnedKey) config.expectedFingerprint = pinnedKey;
       activeSocket.send(JSON.stringify(config));
-      ui.sessionSubtitle.textContent = bilingual('正在打开 TCP 连接...', 'Opening TCP connection...');
+      currentSessionSubtitle = localized('正在打开 TCP 连接...', 'Opening TCP connection...');
+      ui.sessionSubtitle.textContent = localize(currentSessionSubtitle);
       event(bilingual('WebSocket 已建立，正在打开 SSH 传输。', 'WebSocket established; opening SSH transport.'), 'transport');
     }, { once: true });
     activeSocket.addEventListener('message', (socketEvent) => {
@@ -898,6 +1036,7 @@ async function connect(): Promise<void> {
           ? bilingual('会话已关闭。', 'Session closed.')
           : bilingual(`会话已关闭（${closeEvent.code}）。`, `Session closed (${closeEvent.code}).`);
       event(reason, 'disconnect', closeEvent.code !== 1000 && closeEvent.code !== 1005);
+      currentSessionSubtitle = messageTranslation(reason);
       ui.sessionSubtitle.textContent = reason;
       setState(closeEvent.code === 1000 || closeEvent.code === 1005 ? 'idle' : 'error');
       ui.disconnect.disabled = true;
@@ -930,6 +1069,7 @@ function disconnect(reason = bilingual('已由用户断开连接', 'Disconnected
   clearHostKeyPrompt();
   currentExpectedFingerprint = '';
   if (activeSocket && activeSocket.readyState < WebSocket.CLOSING) activeSocket.close(1000, 'Disconnected by user');
+  currentSessionSubtitle = messageTranslation(reason);
   ui.sessionSubtitle.textContent = reason;
   event(reason, 'disconnect');
   setState('idle');
@@ -946,6 +1086,7 @@ function createDecoder(encoding: string): TextDecoder {
 }
 
 function copySafeLink(): void {
+  applyFormDefaults();
   const error = validateProfileFields();
   if (error) {
     showFormError(error);
@@ -964,13 +1105,33 @@ function copySafeLink(): void {
   );
 }
 
+function setPortValue(value: string | number, source: string): void {
+  if (String(value).trim() === '') {
+    ui.port.value = '22';
+    return;
+  }
+  const port = typeof value === 'number' ? value : Number(value);
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+    throw new Error(bilingual(`${source}中的端口无效`, `Invalid port in ${source}`));
+  }
+  ui.port.value = String(port);
+}
+
 function applyURLParameters(): boolean {
   const query = new URLSearchParams(location.search);
   const fragment = new URLSearchParams(location.hash.replace(/^#/, ''));
   const value = (key: string): string | null => query.get(key) ?? fragment.get(key);
   const host = value('hostname') ?? value('host');
   if (host) ui.host.value = host;
-  if (value('port')) ui.port.value = value('port')!;
+  const port = value('port');
+  if (port !== null) {
+    try {
+      setPortValue(port, bilingual('连接链接', 'connection link'));
+    } catch (error) {
+      showFormError(error instanceof Error ? error.message : String(error));
+      return false;
+    }
+  }
   if (value('username')) ui.username.value = value('username')!;
   if (value('command')) ui.initialCommand.value = value('command')!;
   if (value('term')) ui.termType.value = value('term')!;
@@ -988,14 +1149,14 @@ function applyURLParameters(): boolean {
       toast(bilingual('密码 URL 参数不是有效的 Base64。', 'The password URL parameter is not valid Base64.'), 'error');
     }
   }
-  return Boolean(host && value('username') && (value('autoconnect') === '1' || legacyPassword));
+  return Boolean(host && (value('autoconnect') === '1' || legacyPassword));
 }
 
 function applyWSSHOptions(options: WSSHOptions): void {
   clearCredentials();
   ui.host.value = options.host ?? options.hostname ?? ui.host.value;
-  if (options.port !== undefined) ui.port.value = String(options.port);
-  if (options.username !== undefined) ui.username.value = options.username;
+  setPortValue(options.port ?? 22, 'wssh.connect()');
+  ui.username.value = options.username?.trim() || 'root';
   if (options.password !== undefined) {
     setAuthMethod('password');
     ui.password.value = options.password;
@@ -1057,10 +1218,7 @@ ui.shareLink.addEventListener('click', copySafeLink);
 ui.revealPassword.addEventListener('click', () => {
   const reveal = ui.password.type === 'password';
   ui.password.type = reveal ? 'text' : 'password';
-  ui.revealPassword.textContent = reveal ? bilingual('隐藏', 'Hide') : bilingual('显示', 'Show');
-  ui.revealPassword.setAttribute('aria-label', reveal
-    ? bilingual('隐藏密码', 'Hide password')
-    : bilingual('显示密码', 'Show password'));
+  updateRevealPasswordButton();
 });
 ui.keyFile.addEventListener('change', async () => {
   const file = ui.keyFile.files?.[0];
@@ -1116,6 +1274,16 @@ ui.eventToggle.addEventListener('click', () => {
   ui.eventToggle.setAttribute('aria-expanded', String(!ui.eventLog.hidden));
   fitTerminal(true);
 });
+  ui.languageToggle.addEventListener('click', () => {
+  applyLanguage(currentLanguage === 'zh-CN' ? 'en' : 'zh-CN', true);
+  renderProfiles();
+  setState(connectionState);
+  openPanel(ui.panel.classList.contains('open'));
+  if (connectionState === 'idle') ui.sessionTitle.textContent = bilingual('无活动会话', 'No active session');
+  ui.terminalLabel.textContent = connectionState === 'idle'
+    ? bilingual('终端 · 等待', 'terminal · waiting')
+    : `${bilingual('终端', 'terminal')} · ${ui.username.value.trim()}@${normalizeHost(ui.host.value)}`;
+});
 ui.themeToggle.addEventListener('click', () => {
   const next = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
   document.documentElement.dataset.theme = next;
@@ -1142,10 +1310,16 @@ window.matchMedia('(max-width: 760px)').addEventListener('change', () => openPan
 let storedTheme: string | null = null;
 try { storedTheme = localStorage.getItem(THEME_STORAGE_KEY); } catch { /* Storage can be disabled. */ }
 if (storedTheme === 'light' || storedTheme === 'dark') document.documentElement.dataset.theme = storedTheme;
+applyLanguage(currentLanguage);
+element<HTMLElement>('app').hidden = false;
 renderProfiles();
 openPanel(false);
 setAuthMethod('password');
 setState('idle');
+ui.sessionTitle.textContent = bilingual('无活动会话', 'No active session');
+ui.sessionSubtitle.textContent = bilingual('选择目标并连接', 'Choose a target and connect');
+ui.terminalLabel.textContent = bilingual('终端 · 等待', 'terminal · waiting');
+ui.eventMessage.textContent = bilingual('Worker 运行时待命', 'Worker runtime standing by');
 initializeCompatibilityAPI();
 const shouldAutoConnect = applyURLParameters();
 requestAnimationFrame(() => {

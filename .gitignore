@@ -8,3 +8,4 @@ tests-edge/
 .dev.vars
 .env*
 !.env.example
+.workbuddy/
