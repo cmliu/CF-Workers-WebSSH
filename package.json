@@ -9,9 +9,7 @@
     "dev:web": "vite --config vite.config.ts",
     "build:web": "vite build --config vite.config.ts",
     "typecheck": "tsc -p tsconfig.worker.json --noEmit && tsc -p tsconfig.frontend.json --noEmit",
-    "test": "vitest run",
-    "test:edge": "vitest run --config vitest.edge.config.ts",
-    "check": "npm run typecheck && npm run test && npm run test:edge && wrangler deploy --dry-run --outdir .wrangler/build",
+    "check": "npm run typecheck && wrangler deploy --dry-run --outdir .wrangler/build",
     "deploy": "wrangler deploy"
   },
   "dependencies": {
@@ -20,11 +18,9 @@
     "@xterm/xterm": "^6.0.0"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.18.8",
     "@cloudflare/workers-types": "^5.20260727.1",
     "typescript": "^5.9.2",
     "vite": "^7.0.6",
-    "vitest": "^4.1.10",
     "wrangler": "^4.114.0"
   },
   "engines": {

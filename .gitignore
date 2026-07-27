@@ -2,9 +2,6 @@ node_modules/
 dist/
 .wrangler/
 coverage/
-tests/*
-!tests/ui-state.test.ts
-tests-edge/
 *.log
 .dev.vars
 .env*

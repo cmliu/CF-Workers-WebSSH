@@ -89,7 +89,7 @@ npx wrangler whoami
 npm run check
 ```
 
-依次执行 Worker 与前端类型检查、Node 单元测试、Cloudflare 运行时测试、前端构建和 Wrangler dry-run。任何一步失败都应先修复。
+依次执行 Worker 与前端类型检查、前端构建和 Wrangler dry-run。任何一步失败都应先修复。
 
 ### 6. 首次发布
 
@@ -182,8 +182,6 @@ npm run dev:web    # 访问 http://localhost:5173，Vite 代理 /api 到 8787
 | `npm run dev:web` | 启动 Vite 前端开发服务器 |
 | `npm run build:web` | 将前端构建到 `dist/` |
 | `npm run typecheck` | 检查 Worker 与前端 TypeScript |
-| `npm test` | 运行 Node 环境单元测试 |
-| `npm run test:edge` | 在 Cloudflare Workers 测试池运行边缘测试 |
 | `npm run check` | 执行全部检查、构建和部署 dry-run |
 | `npm run deploy` | 通过 Wrangler 构建前端并部署到 Cloudflare |
 
@@ -209,8 +207,6 @@ npm run dev:web    # 访问 http://localhost:5173，Vite 代理 /api 到 8787
 │   ├── http-security.ts       # HTTPS 与安全响应头
 │   ├── types.ts               # Worker 环境、连接消息和 SSH 类型
 │   └── worker.ts              # HTTP/API/Assets 入口
-├── tests/                     # Node 单元测试
-├── tests-edge/                # Cloudflare 运行时测试
 ├── wrangler.toml              # Worker、Assets、Durable Object 与 migration
 └── package.json
 ```
