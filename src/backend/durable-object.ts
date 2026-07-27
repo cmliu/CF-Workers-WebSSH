@@ -127,7 +127,10 @@ export class SSHSessionDO implements DurableObject {
       // replay race without retaining authorization material after an attempt.
       await tx.delete(TICKET_STORAGE_KEY);
       await tx.deleteAlarm();
-      if (stored.ip !== ip || stored.expiresAt < Date.now() || stored.secret.length !== 32) return false;
+      // 不校验 stored.ip !== ip：反代/CDN（如腾讯云 EdgeOne）多节点回源会让
+      // CF-Connecting-IP 在签发与使用两次请求间不一致，导致 ticket 误判失效
+      // （概率性 "WebSocket 传输错误"）。详见 verifyTicket 注释。stored.ip 保留用于审计。
+      if (stored.expiresAt < Date.now() || stored.secret.length !== 32) return false;
       const secret = new Uint8Array(stored.secret);
       try {
         return await verifyTicket(secret, ticket, ip);

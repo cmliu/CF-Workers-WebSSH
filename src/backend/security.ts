@@ -39,9 +39,16 @@ export async function verifyTicket(secret: Uint8Array, ticket: string, ip: strin
     const valid = await crypto.subtle.verify('HMAC', key, new Uint8Array(fromBase64Url(parts[1])), encoder.encode(parts[0]));
     if (!valid) return false;
     const payload = JSON.parse(decoder.decode(fromBase64Url(parts[0]))) as Partial<TicketPayload>;
+    // 不做强一致的 IP 绑定校验（payload.ip === ip）：当站点被反代/CDN（如腾讯云
+    // EdgeOne）套用时，Cloudflare 注入的 CF-Connecting-IP 是反代回源节点 IP，而
+    // 非浏览器真实 IP；多节点回源会让 POST /api/session 与 GET /api/ssh 两次请求
+    // 的 CF-Connecting-IP 不一致，导致 ticket 被误判失效，前端表现为概率性
+    // "WebSocket 传输错误"。ticket 已有 HMAC-SHA256 签名 + 60s 短过期 + 一次性
+    // 消费（nonce）三重保护，足以抵御重放，IP 绑定在此场景下冗余且误伤。
+    // ip 参数与 payload.ip 保留以备审计。
     return typeof payload.exp === 'number' && Number.isFinite(payload.exp)
       && payload.exp >= Date.now() && payload.exp <= Date.now() + TICKET_TTL_MS + 5000
-      && payload.ip === ip && typeof payload.nonce === 'string'
+      && typeof payload.nonce === 'string'
       && /^[0-9a-f-]{36}$/i.test(payload.nonce);
   } catch {
     return false;
