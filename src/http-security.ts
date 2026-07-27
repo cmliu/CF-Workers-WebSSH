@@ -11,6 +11,26 @@ export function secureResponse(response: Response): Response {
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }
 
+export function corsResponse(response: Response): Response {
+  const headers = new Headers(response.headers);
+  headers.set('Access-Control-Allow-Origin', '*');
+  headers.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  headers.set('Access-Control-Allow-Headers', 'Content-Type');
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+    webSocket: response.webSocket,
+  });
+}
+
+export function corsPreflightResponse(): Response {
+  return secureResponse(new Response(null, {
+    status: 204,
+    headers: { 'Access-Control-Max-Age': '86400' },
+  }));
+}
+
 export function jsonError(error: string, status: number): Response {
   return secureResponse(Response.json({ error }, { status, headers: { 'Cache-Control': 'no-store' } }));
 }

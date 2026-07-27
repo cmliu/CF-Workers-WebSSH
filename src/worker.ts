@@ -1,7 +1,6 @@
 import type { Env } from './types';
 import { SSHSessionDO } from './backend/durable-object';
-import { isSameOrigin } from './backend/security';
-import { httpsRedirect, isProductionHttp, jsonError, secureResponse } from './http-security';
+import { corsPreflightResponse, corsResponse, httpsRedirect, isProductionHttp, jsonError, secureResponse } from './http-security';
 
 export { SSHSessionDO };
 
@@ -11,7 +10,6 @@ function clientAddress(request: Request): string {
 }
 
 async function sessionTicket(request: Request, env: Env): Promise<Response> {
-  if (!isSameOrigin(request)) return jsonError('Invalid request origin', 403);
   if (!request.headers.get('Content-Type')?.toLowerCase().startsWith('application/json')) return jsonError('Expected application/json', 415);
   const contentLength = Number(request.headers.get('Content-Length') ?? 0);
   if (!Number.isFinite(contentLength) || contentLength < 0 || contentLength > 8192) return jsonError('Request body is too large', 413);
@@ -36,7 +34,6 @@ async function sessionTicket(request: Request, env: Env): Promise<Response> {
 }
 
 async function sshUpgrade(request: Request, env: Env): Promise<Response> {
-  if (!isSameOrigin(request)) return jsonError('Invalid WebSocket origin', 403);
   if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') return jsonError('WebSocket upgrade required', 426);
   const url = new URL(request.url);
   const ticket = url.searchParams.get('ticket');
@@ -56,30 +53,35 @@ async function sshUpgrade(request: Request, env: Env): Promise<Response> {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    const url = new URL(request.url);
+    const isApiRequest = url.pathname.startsWith('/api/');
     try {
-      const url = new URL(request.url);
       if (isProductionHttp(request)) {
-        if (url.pathname.startsWith('/api/')) return jsonError('HTTPS is required', 403);
+        if (isApiRequest) return corsResponse(jsonError('HTTPS is required', 403));
         if (request.method === 'GET' || request.method === 'HEAD') return httpsRedirect(request);
         return jsonError('HTTPS is required', 403);
       }
+      if (isApiRequest && request.method === 'OPTIONS') {
+        return corsResponse(corsPreflightResponse());
+      }
       if (url.pathname === '/api/health' && request.method === 'GET') {
-        return secureResponse(Response.json({ status: 'ok', runtime: 'cloudflare-workers', ssh: true }, { headers: { 'Cache-Control': 'no-store' } }));
+        return corsResponse(secureResponse(Response.json({ status: 'ok', runtime: 'cloudflare-workers', ssh: true }, { headers: { 'Cache-Control': 'no-store' } })));
       }
       if (url.pathname === '/api/session') {
-        if (request.method !== 'POST') return jsonError('Method not allowed', 405);
-        return sessionTicket(request, env);
+        if (request.method !== 'POST') return corsResponse(jsonError('Method not allowed', 405));
+        return corsResponse(await sessionTicket(request, env));
       }
       if (url.pathname === '/api/ssh') {
-        if (request.method !== 'GET') return jsonError('Method not allowed', 405);
-        return sshUpgrade(request, env);
+        if (request.method !== 'GET') return corsResponse(jsonError('Method not allowed', 405));
+        return corsResponse(await sshUpgrade(request, env));
       }
-      if (url.pathname.startsWith('/api/')) return jsonError('Not found', 404);
+      if (isApiRequest) return corsResponse(jsonError('Not found', 404));
       if (!env.ASSETS) return jsonError('Static assets binding is not configured', 503);
       return secureResponse(await env.ASSETS.fetch(request));
     } catch (error) {
       console.error('Worker request failed', error instanceof Error ? error.message : String(error));
-      return jsonError('Internal server error', 500);
+      const response = jsonError('Internal server error', 500);
+      return isApiRequest ? corsResponse(response) : response;
     }
   },
 };

@@ -48,11 +48,6 @@ export async function verifyTicket(secret: Uint8Array, ticket: string, ip: strin
   }
 }
 
-export function isSameOrigin(request: Request): boolean {
-  const origin = request.headers.get('Origin');
-  return origin !== null && origin === new URL(request.url).origin;
-}
-
 function isIPv4(host: string): boolean {
   return /^(?:\d{1,3}\.){3}\d{1,3}$/.test(host)
     && host.split('.').every((part) => Number(part) <= 255 && (part === '0' || !part.startsWith('0')));

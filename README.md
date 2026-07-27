@@ -219,7 +219,7 @@ npm run dev:web    # 访问 http://localhost:5173，Vite 代理 /api 到 8787
 | `/api/session` | `POST` | 匿名创建一次性会话票据 |
 | `/api/ssh?ticket=...&session=...` | `GET` + WebSocket Upgrade | 进入对应 Durable Object 并建立 SSH 会话 |
 
-`/api/session` 和 `/api/ssh` 都要求请求 `Origin` 与 Worker URL 同源。同源检查只限制浏览器请求来源，不验证用户身份；公网访问控制应由 Cloudflare Access、WAF 和限流策略提供。
+所有 `/api/*` 响应均允许跨站访问，并支持浏览器 `OPTIONS` 预检请求。公网访问控制应由 Cloudflare Access、WAF 和限流策略提供。
 
 ## 安全说明
 
