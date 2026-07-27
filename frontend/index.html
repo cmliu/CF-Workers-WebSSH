@@ -20,7 +20,7 @@
         <div class="brand-group">
           <button
             id="panel-toggle"
-            class="icon-button mobile-only"
+            class="icon-button"
             type="button"
             aria-label="打开连接面板"
             data-i18n-aria-label-zh="打开连接面板"
@@ -75,7 +75,7 @@
         </div>
       </header>
 
-      <div class="app-shell">
+      <div id="app-shell" class="app-shell">
         <button
           id="panel-scrim"
           class="panel-scrim"
@@ -97,7 +97,6 @@
               <p class="eyebrow" data-i18n-zh="连接管理" data-i18n-en="CONNECTIONS">连接管理</p>
               <h1 data-i18n-zh="SSH 工作台" data-i18n-en="SSH workspace">SSH 工作台</h1>
             </div>
-            <button id="new-profile" class="small-button" type="button" data-i18n-zh="新建" data-i18n-en="New">新建</button>
           </div>
 
           <section class="profiles-section" aria-labelledby="profiles-title">
@@ -269,7 +268,6 @@
               <div class="terminal-actions">
                 <button id="clear-terminal" class="toolbar-button" type="button" data-i18n-zh="清屏" data-i18n-en="Clear">清屏</button>
                 <button id="fullscreen-terminal" class="toolbar-button" type="button" data-i18n-zh="全屏" data-i18n-en="Fullscreen">全屏</button>
-                <button id="disconnect-button" class="toolbar-button danger" type="button" disabled data-i18n-zh="断开" data-i18n-en="Disconnect">断开</button>
               </div>
             </div>
             <div id="terminal-stage" class="terminal-stage">

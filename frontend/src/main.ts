@@ -4,10 +4,11 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import { historyKey, historyLabel, normalizeHistory, upsertHistoryIfNewer, type HistoryEntry } from './history';
 import { getHistoryPasswordKey } from './history-key';
 import { decryptPasswordResult, encryptPassword, isEncryptedPassword } from './password-crypto';
+import { resolveConnectionControl, resolveConnectionPanel } from './ui-state';
 import './style.css';
 
 type AuthMethod = 'password' | 'publickey';
-type ConnectionState = 'idle' | 'connecting' | 'connected' | 'error';
+type ConnectionState = 'idle' | 'connecting' | 'connected' | 'disconnecting' | 'error';
 type Language = 'zh-CN' | 'en';
 type Translation = readonly [zh: string, en: string];
 
@@ -240,10 +241,10 @@ function element<T extends HTMLElement>(id: string): T {
 }
 
 const ui = {
+  shell: element<HTMLElement>('app-shell'),
   panel: element<HTMLElement>('connection-panel'),
   panelToggle: element<HTMLButtonElement>('panel-toggle'),
   panelScrim: element<HTMLButtonElement>('panel-scrim'),
-  newProfile: element<HTMLButtonElement>('new-profile'),
   profileList: element<HTMLElement>('profile-list'),
   profileCount: element<HTMLElement>('profile-count'),
   form: element<HTMLFormElement>('connection-form'),
@@ -284,7 +285,6 @@ const ui = {
   emptyConnect: element<HTMLButtonElement>('empty-connect'),
   clearTerminal: element<HTMLButtonElement>('clear-terminal'),
   fullscreenTerminal: element<HTMLButtonElement>('fullscreen-terminal'),
-  disconnect: element<HTMLButtonElement>('disconnect-button'),
   eventMessage: element<HTMLElement>('event-message'),
   eventToggle: element<HTMLButtonElement>('event-toggle'),
   eventLog: element<HTMLElement>('event-log'),
@@ -358,6 +358,8 @@ let pingTimer: number | null = null;
 let lastPingAt = 0;
 let pendingHostKey: { fingerprint: string; keyType: string } | null = null;
 let currentTargetKey = '';
+let currentTargetLabel = '';
+let currentTerminalTarget = '';
 let currentInitialCommand = '';
 let initialCommandSent = false;
 let decoder = new TextDecoder('utf-8');
@@ -374,7 +376,10 @@ let pendingHistory: PendingHistory | null = null;
 let historyPasswordLoading = false;
 let historyPasswordLoadGeneration = 0;
 let historyMutationSequence = 0;
+let keyFileReadGeneration = 0;
 const latestHistoryMutation = new Map<string, number>();
+const panelMedia = window.matchMedia('(max-width: 760px)');
+let panelOpen = !panelMedia.matches;
 
 const terminal = new Terminal({
   allowProposedApi: false,
@@ -699,6 +704,7 @@ function resetPasswordField(): void {
 }
 
 function clearPrivateKeyFields(): void {
+  keyFileReadGeneration++;
   ui.privateKey.value = '';
   ui.keyFile.value = '';
   ui.keyFileName.textContent = bilingual('未选择文件', 'No file selected');
@@ -707,6 +713,12 @@ function clearPrivateKeyFields(): void {
 function clearCredentials(): void {
   resetPasswordField();
   clearPrivateKeyFields();
+}
+
+function invalidateAndClearCredentials(): void {
+  historyPasswordLoadGeneration++;
+  historyPasswordLoading = false;
+  clearCredentials();
 }
 
 function normalizeHost(host: string): string {
@@ -972,14 +984,24 @@ function setState(state: ConnectionState, label?: string): void {
     idle: bilingual('离线', 'Offline'),
     connecting: bilingual('连接中', 'Connecting'),
     connected: bilingual('在线', 'Online'),
+    disconnecting: bilingual('正在断开', 'Disconnecting'),
     error: bilingual('错误', 'Error'),
   } satisfies Record<ConnectionState, string>)[state];
   ui.liveOrb.className = `live-orb ${state}`;
-  ui.connect.disabled = state === 'connecting' || state === 'connected' || historyPasswordLoading;
-  ui.connect.querySelector('span:last-child')!.textContent = state === 'connecting'
-    ? bilingual('连接中...', 'Connecting...')
-    : state === 'connected' ? bilingual('已连接', 'Connected') : bilingual('连接', 'Connect');
-  ui.disconnect.disabled = state !== 'connecting' && state !== 'connected';
+  const control = resolveConnectionControl(state, historyPasswordLoading);
+  const controlLabel = control.action === 'cancel'
+    ? bilingual('取消连接', 'Cancel connection')
+    : control.action === 'disconnect'
+      ? bilingual('断开', 'Disconnect')
+      : control.action === 'disconnecting'
+        ? bilingual('断开中...', 'Disconnecting...')
+        : bilingual('连接', 'Connect');
+  ui.connect.disabled = control.disabled;
+  ui.connect.classList.toggle('is-danger', control.danger);
+  ui.connect.dataset.action = control.action;
+  ui.connect.querySelector<HTMLElement>('.button-icon')!.textContent = control.danger ? 'x' : '>_';
+  ui.connect.querySelector<HTMLElement>('span:last-child')!.textContent = controlLabel;
+  ui.connect.setAttribute('aria-label', controlLabel);
 }
 
 function event(message: string, category = 'session', error = false, alternate?: string): void {
@@ -1017,17 +1039,25 @@ function fitTerminal(send = true): void {
   });
 }
 
-function openPanel(open: boolean): void {
-  const mobile = window.matchMedia('(max-width: 760px)').matches;
-  const visible = mobile && open;
-  ui.panel.classList.toggle('open', visible);
-  ui.panel.inert = mobile && !visible;
-  ui.panel.setAttribute('aria-hidden', String(mobile && !visible));
-  ui.panelToggle.setAttribute('aria-expanded', String(visible));
-  ui.panelToggle.setAttribute('aria-label', visible
-    ? bilingual('关闭连接面板', 'Close connection panel')
-    : bilingual('打开连接面板', 'Open connection panel'));
-  ui.panelScrim.hidden = !visible;
+function setPanelOpen(open: boolean): void {
+  panelOpen = open;
+  const view = resolveConnectionPanel(open, panelMedia.matches);
+  if (!open && (connectionState === 'connecting' || connectionState === 'connected' || connectionState === 'disconnecting')) {
+    invalidateAndClearCredentials();
+  }
+  if (!view.expanded && ui.panel.contains(document.activeElement)) ui.panelToggle.focus();
+  ui.shell.classList.toggle('panel-collapsed', view.desktopCollapsed);
+  ui.panel.classList.toggle('open', view.drawerOpen);
+  ui.panel.inert = !view.expanded;
+  ui.panel.setAttribute('aria-hidden', String(!view.expanded));
+  ui.panelToggle.setAttribute('aria-expanded', String(view.expanded));
+  const toggleLabel = view.expanded
+    ? bilingual('折叠连接面板', 'Collapse connection panel')
+    : bilingual('展开连接面板', 'Expand connection panel');
+  ui.panelToggle.setAttribute('aria-label', toggleLabel);
+  ui.panelToggle.title = toggleLabel;
+  ui.panelScrim.hidden = !view.scrimVisible;
+  requestAnimationFrame(() => fitTerminal(true));
 }
 
 function updateUptime(): void {
@@ -1066,7 +1096,9 @@ function stopTimers(): void {
 
 function markReady(message = bilingual('交互式 Shell 已就绪', 'Interactive shell ready')): void {
   if (connectionState === 'connected') return;
+  invalidateAndClearCredentials();
   setState('connected');
+  setPanelOpen(false);
   void saveConnectedProfile().catch(() => {
     toast(bilingual('连接成功，但无法更新历史记录。', 'Connected, but the history could not be updated.'), 'error');
   });
@@ -1076,7 +1108,13 @@ function markReady(message = bilingual('交互式 Shell 已就绪', 'Interactive
   event(message, 'ready');
   if (currentInitialCommand && !initialCommandSent) {
     initialCommandSent = true;
-    window.setTimeout(() => sendTerminalData(`${currentInitialCommand}\r`), 120);
+    const command = currentInitialCommand;
+    const activeSocket = socket;
+    const generation = connectGeneration;
+    window.setTimeout(() => {
+      if (socket !== activeSocket || generation !== connectGeneration) return;
+      sendTerminalData(`${command}\r`);
+    }, 120);
   }
   terminal.focus();
 }
@@ -1158,13 +1196,11 @@ function handleServerMessage(message: ServerMessage): void {
   }
   if (type === 'error') {
     const text = bilingualServerMessage(message.message, message.event, 'The SSH session failed.', 'SSH 错误');
-    pendingHistory = null;
-    clearHostKeyPrompt();
+    const failedSocket = socket;
     event(text, message.event ?? 'error', true);
     showFormError(text);
     toast(text, 'error');
-    setState('error');
-    if (socket?.readyState === WebSocket.OPEN) socket.close(1011, 'SSH session failed');
+    failActiveConnection(failedSocket, 'SSH session failed', messageTranslation(text));
     return;
   }
   if (type === 'debug') {
@@ -1180,7 +1216,8 @@ function handleServerMessage(message: ServerMessage): void {
   }
 }
 
-async function handleSocketData(data: string | ArrayBuffer | Blob): Promise<void> {
+async function handleSocketData(data: string | ArrayBuffer | Blob, activeSocket: WebSocket, generation: number): Promise<void> {
+  if (socket !== activeSocket || generation !== connectGeneration) return;
   if (typeof data === 'string') {
     try {
       handleServerMessage(JSON.parse(data) as ServerMessage);
@@ -1190,6 +1227,7 @@ async function handleSocketData(data: string | ArrayBuffer | Blob): Promise<void
     return;
   }
   const bytes = data instanceof Blob ? new Uint8Array(await data.arrayBuffer()) : new Uint8Array(data);
+  if (socket !== activeSocket || generation !== connectGeneration) return;
   if (decoder.encoding === 'utf-8') terminal.write(bytes);
   else terminal.write(decoder.decode(bytes, { stream: true }));
 }
@@ -1197,6 +1235,22 @@ async function handleSocketData(data: string | ArrayBuffer | Blob): Promise<void
 function sendTerminalData(data: string): void {
   if (socket?.readyState !== WebSocket.OPEN || connectionState !== 'connected' || !data) return;
   socket.send(JSON.stringify({ type: 'input', data }));
+}
+
+function failActiveConnection(activeSocket: WebSocket | null, closeReason: string, displayReason: LocalizedMessage): void {
+  if (activeSocket && socket === activeSocket) socket = null;
+  connectGeneration++;
+  pendingHistory = null;
+  authorizationAbort?.abort();
+  authorizationAbort = null;
+  currentExpectedFingerprint = '';
+  stopTimers();
+  clearHostKeyPrompt();
+  invalidateAndClearCredentials();
+  currentSessionSubtitle = displayReason;
+  ui.sessionSubtitle.textContent = localize(displayReason);
+  setState('error');
+  if (activeSocket && activeSocket.readyState < WebSocket.CLOSING) activeSocket.close(1011, closeReason);
 }
 
 async function issueTicket(signal: AbortSignal): Promise<{ ticket: string; sessionId: string }> {
@@ -1221,7 +1275,8 @@ async function issueTicket(signal: AbortSignal): Promise<{ ticket: string; sessi
 }
 
 async function connect(): Promise<void> {
-  if (connectionState === 'connecting' || connectionState === 'connected') return;
+  if (connectionState === 'connecting' || connectionState === 'connected' || connectionState === 'disconnecting') return;
+  if (socket || authorizationAbort) return;
   if (historyPasswordLoading) return;
   historyPasswordLoadGeneration++;
   historyPasswordLoading = false;
@@ -1240,7 +1295,6 @@ async function connect(): Promise<void> {
   currentFormError = null;
   const generation = ++connectGeneration;
   const abortController = new AbortController();
-  authorizationAbort?.abort();
   authorizationAbort = abortController;
   setState('connecting');
   ui.terminalEmpty.hidden = true;
@@ -1251,6 +1305,8 @@ async function connect(): Promise<void> {
   const port = Number(ui.port.value);
   const username = ui.username.value.trim();
   currentTargetKey = targetKey(host, port, username);
+  currentTargetLabel = targetLabel(host, port, username);
+  currentTerminalTarget = `${username}@${host.includes(':') ? `[${host}]` : host}`;
   const pinnedKey = ui.fingerprint.value.trim() || hostKeys[currentTargetKey] || '';
   currentExpectedFingerprint = pinnedKey;
   if (pinnedKey) ui.fingerprint.value = pinnedKey;
@@ -1259,13 +1315,13 @@ async function connect(): Promise<void> {
   pendingHostKey = null;
   awaitingHostKeyDecision = false;
   decoder = createDecoder(ui.encoding.value);
-  ui.sessionTitle.textContent = `${username}@${host}:${port}`;
+  ui.sessionTitle.textContent = currentTargetLabel;
   currentSessionSubtitle = localized('正在授权 Worker 会话...', 'Authorizing Worker session...');
   ui.sessionSubtitle.textContent = localize(currentSessionSubtitle);
   ui.metricEdge.textContent = '--';
   ui.metricRtt.textContent = '--';
   ui.metricHostKey.textContent = '--';
-  ui.terminalLabel.textContent = `${bilingual('终端', 'terminal')} · ${username}@${host}`;
+  ui.terminalLabel.textContent = `${bilingual('终端', 'terminal')} · ${currentTerminalTarget}`;
   event(bilingual(`正在连接 ${username}@${host}:${port}`, `Starting ${username}@${host}:${port}`), 'connect');
 
   try {
@@ -1316,14 +1372,15 @@ async function connect(): Promise<void> {
       event(bilingual('WebSocket 已建立，正在打开 SSH 传输。', 'WebSocket established; opening SSH transport.'), 'transport');
     }, { once: true });
     activeSocket.addEventListener('message', (socketEvent) => {
-      if (socket === activeSocket) void handleSocketData(socketEvent.data as string | ArrayBuffer | Blob);
+      void handleSocketData(socketEvent.data as string | ArrayBuffer | Blob, activeSocket, generation);
     });
     activeSocket.addEventListener('error', () => {
       if (socket !== activeSocket) return;
-      pendingHistory = null;
-      clearHostKeyPrompt();
-      event(bilingual('WebSocket 传输错误。', 'WebSocket transport error.'), 'transport', true);
-      setState('error');
+      const message = localized('WebSocket 传输错误。', 'WebSocket transport error.');
+      event(localize(message), 'transport', true);
+      showFormError(localize(message));
+      toast(localize(message), 'error');
+      failActiveConnection(activeSocket, 'WebSocket transport error', message);
     });
     activeSocket.addEventListener('close', (closeEvent) => {
       if (socket !== activeSocket) return;
@@ -1332,6 +1389,7 @@ async function connect(): Promise<void> {
       currentExpectedFingerprint = '';
       stopTimers();
       clearHostKeyPrompt();
+      invalidateAndClearCredentials();
       const wasActive = connectionState === 'connected';
       const reason = closeEvent.reason
         ? bilingualServerMessage(closeEvent.reason)
@@ -1342,14 +1400,13 @@ async function connect(): Promise<void> {
       currentSessionSubtitle = messageTranslation(reason);
       ui.sessionSubtitle.textContent = reason;
       setState(closeEvent.code === 1000 || closeEvent.code === 1005 ? 'idle' : 'error');
-      ui.disconnect.disabled = true;
       if (wasActive) toast(reason, closeEvent.code === 1000 || closeEvent.code === 1005 ? 'info' : 'error');
     });
   } catch (error) {
     if (authorizationAbort === abortController) authorizationAbort = null;
     if (generation !== connectGeneration) return;
     pendingHistory = null;
-    clearCredentials();
+    invalidateAndClearCredentials();
     clearHostKeyPrompt();
     const message = error instanceof DOMException && error.name === 'AbortError'
       ? bilingual('连接授权已取消。', 'Connection authorization was cancelled.')
@@ -1364,7 +1421,9 @@ async function connect(): Promise<void> {
 }
 
 function disconnect(reason = bilingual('已由用户断开连接', 'Disconnected by user')): void {
-  connectGeneration++;
+  if (connectionState === 'disconnecting') return;
+  const generation = ++connectGeneration;
+  setState('disconnecting');
   pendingHistory = null;
   authorizationAbort?.abort();
   authorizationAbort = null;
@@ -1372,12 +1431,24 @@ function disconnect(reason = bilingual('已由用户断开连接', 'Disconnected
   socket = null;
   stopTimers();
   clearHostKeyPrompt();
+  invalidateAndClearCredentials();
   currentExpectedFingerprint = '';
-  if (activeSocket && activeSocket.readyState < WebSocket.CLOSING) activeSocket.close(1000, 'Disconnected by user');
   currentSessionSubtitle = messageTranslation(reason);
   ui.sessionSubtitle.textContent = reason;
   event(reason, 'disconnect');
-  setState('idle');
+  let settled = false;
+  const finish = (): void => {
+    if (settled) return;
+    settled = true;
+    if (generation === connectGeneration && connectionState === 'disconnecting') setState('idle');
+  };
+  if (activeSocket && activeSocket.readyState < WebSocket.CLOSED) {
+    activeSocket.addEventListener('close', finish, { once: true });
+    if (activeSocket.readyState < WebSocket.CLOSING) activeSocket.close(1000, 'Disconnected by user');
+    window.setTimeout(finish, 1_000);
+  } else {
+    window.setTimeout(finish, 180);
+  }
 }
 
 function createDecoder(encoding: string): TextDecoder {
@@ -1488,7 +1559,7 @@ function initializeCompatibilityAPI(): void {
     password?: string,
     privateKey?: string,
   ): Promise<void> => {
-    if (connectionState === 'connecting' || connectionState === 'connected') {
+    if (connectionState === 'connecting' || connectionState === 'connected' || connectionState === 'disconnecting') {
       throw new Error(bilingual('已有活动的 SSH 连接', 'An SSH connection is already active'));
     }
     const options: WSSHOptions = typeof optionsOrHost === 'string'
@@ -1521,9 +1592,14 @@ for (const radio of ui.form.querySelectorAll<HTMLInputElement>('input[name="auth
 }
 ui.form.addEventListener('submit', (formEvent) => {
   formEvent.preventDefault();
-  void connect();
+  if (connectionState === 'connecting' || connectionState === 'connected') {
+    disconnect(connectionState === 'connecting'
+      ? bilingual('连接已取消', 'Connection cancelled')
+      : bilingual('已由用户断开连接', 'Disconnected by user'));
+  } else if (connectionState !== 'disconnecting') {
+    void connect();
+  }
 });
-ui.newProfile.addEventListener('click', clearForm);
 ui.shareLink.addEventListener('click', copySafeLink);
 ui.password.addEventListener('input', () => {
   cancelHistoryPasswordLoad();
@@ -1538,8 +1614,12 @@ ui.revealPassword.addEventListener('click', () => {
   updateRevealPasswordButton();
 });
 ui.keyFile.addEventListener('change', async () => {
+  const readGeneration = ++keyFileReadGeneration;
   const file = ui.keyFile.files?.[0];
-  if (!file) return;
+  if (!file) {
+    clearPrivateKeyFields();
+    return;
+  }
   ui.keyFileName.textContent = file.name;
   if (file.size > MAX_KEY_BYTES) {
     showFormError(bilingual('所选私钥大于 64 KiB。', 'The selected private key is larger than 64 KiB.'));
@@ -1547,8 +1627,11 @@ ui.keyFile.addEventListener('change', async () => {
     return;
   }
   try {
-    ui.privateKey.value = await file.text();
+    const privateKey = await file.text();
+    if (readGeneration !== keyFileReadGeneration || ui.keyFile.files?.[0] !== file) return;
+    ui.privateKey.value = privateKey;
   } catch {
+    if (readGeneration !== keyFileReadGeneration) return;
     clearPrivateKeyFields();
     showFormError(bilingual('无法读取所选私钥。', 'The selected private key could not be read.'));
   }
@@ -1570,19 +1653,21 @@ ui.profileList.addEventListener('click', (clickEvent) => {
   if (profile) void applyProfile(profile);
 });
 ui.panelToggle.addEventListener('click', () => {
-  const opening = !ui.panel.classList.contains('open');
-  openPanel(opening);
-  if (opening) requestAnimationFrame(() => ui.host.focus());
+  const opening = !panelOpen;
+  setPanelOpen(opening);
+  if (opening) requestAnimationFrame(() => {
+    if (connectionState === 'connecting' || connectionState === 'connected' || connectionState === 'disconnecting') ui.connect.focus();
+    else ui.host.focus();
+  });
 });
 ui.panelScrim.addEventListener('click', () => {
-  openPanel(false);
+  setPanelOpen(false);
   ui.panelToggle.focus();
 });
 ui.emptyConnect.addEventListener('click', () => {
-  if (window.matchMedia('(max-width: 760px)').matches) openPanel(true);
-  ui.host.focus();
+  setPanelOpen(true);
+  requestAnimationFrame(() => ui.host.focus());
 });
-ui.disconnect.addEventListener('click', () => disconnect());
 ui.clearTerminal.addEventListener('click', () => terminal.clear());
 ui.fullscreenTerminal.addEventListener('click', async () => {
   if (document.fullscreenElement === ui.terminalCard) await document.exitFullscreen();
@@ -1594,15 +1679,15 @@ ui.eventToggle.addEventListener('click', () => {
   ui.eventToggle.setAttribute('aria-expanded', String(!ui.eventLog.hidden));
   fitTerminal(true);
 });
-  ui.languageToggle.addEventListener('click', () => {
+ui.languageToggle.addEventListener('click', () => {
   applyLanguage(currentLanguage === 'zh-CN' ? 'en' : 'zh-CN', true);
   renderProfiles();
   setState(connectionState);
-  openPanel(ui.panel.classList.contains('open'));
-  if (connectionState === 'idle') ui.sessionTitle.textContent = bilingual('无活动会话', 'No active session');
+  setPanelOpen(panelOpen);
+  if (connectionState === 'idle' && !currentTargetLabel) ui.sessionTitle.textContent = bilingual('无活动会话', 'No active session');
   ui.terminalLabel.textContent = connectionState === 'idle'
     ? bilingual('终端 · 等待', 'terminal · waiting')
-    : `${bilingual('终端', 'terminal')} · ${ui.username.value.trim()}@${normalizeHost(ui.host.value)}`;
+    : `${bilingual('终端', 'terminal')} · ${currentTerminalTarget}`;
 });
 ui.themeToggle.addEventListener('click', () => {
   const next = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
@@ -1620,12 +1705,12 @@ terminal.onData(sendTerminalData);
 new ResizeObserver(() => fitTerminal(true)).observe(ui.terminalStage);
 window.addEventListener('beforeunload', () => socket?.close(1000, 'Page closed'));
 document.addEventListener('keydown', (keyEvent) => {
-  if (keyEvent.key === 'Escape' && ui.panel.classList.contains('open') && !ui.hostKeyDialog.open) {
-    openPanel(false);
+  if (keyEvent.key === 'Escape' && panelMedia.matches && panelOpen && !ui.hostKeyDialog.open) {
+    setPanelOpen(false);
     ui.panelToggle.focus();
   }
 });
-window.matchMedia('(max-width: 760px)').addEventListener('change', () => openPanel(false));
+panelMedia.addEventListener('change', (mediaEvent) => setPanelOpen(mediaEvent.matches ? false : panelOpen));
 
 let storedTheme: string | null = null;
 try { storedTheme = localStorage.getItem(THEME_STORAGE_KEY); } catch { /* Storage can be disabled. */ }
@@ -1635,7 +1720,7 @@ async function initialize(): Promise<void> {
   applyLanguage(currentLanguage);
   element<HTMLElement>('app').hidden = false;
   renderProfiles();
-  openPanel(false);
+  setPanelOpen(panelOpen);
   setAuthMethod('password');
   setState('idle');
   ui.sessionTitle.textContent = bilingual('无活动会话', 'No active session');
@@ -1656,7 +1741,7 @@ void initialize().catch(() => {
   applyLanguage(currentLanguage);
   element<HTMLElement>('app').hidden = false;
   renderProfiles();
-  openPanel(false);
+  setPanelOpen(panelOpen);
   setAuthMethod('password');
   setState('idle');
   initializeCompatibilityAPI();

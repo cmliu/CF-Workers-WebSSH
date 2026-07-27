@@ -313,6 +313,17 @@ button:disabled {
   animation: pulse 1.25s ease-in-out infinite;
 }
 
+.status-pill[data-state='disconnecting'] {
+  color: var(--danger);
+}
+
+.status-pill[data-state='disconnecting'] .status-dot,
+.live-orb.disconnecting {
+  background: var(--danger);
+  box-shadow: 0 0 0 3px var(--danger-dim);
+  animation: pulse 1.25s ease-in-out infinite;
+}
+
 .status-pill[data-state='connected'] {
   border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
   color: var(--accent);
@@ -338,6 +349,7 @@ button:disabled {
   display: grid;
   height: calc(100% - var(--topbar-height));
   grid-template-columns: minmax(300px, 340px) minmax(0, 1fr);
+  transition: grid-template-columns 180ms ease;
 }
 
 .connection-panel {
@@ -351,6 +363,7 @@ button:disabled {
   background: var(--panel);
   scrollbar-color: var(--surface-3) transparent;
   scrollbar-width: thin;
+  transition: opacity 140ms ease;
 }
 
 .panel-heading,
@@ -815,6 +828,20 @@ button:disabled {
   transform: translateY(-1px);
 }
 
+.primary-button.is-danger {
+  border-color: color-mix(in srgb, var(--danger) 70%, var(--border));
+  background: var(--danger);
+  color: #26090d;
+}
+
+[data-theme='light'] .primary-button.is-danger {
+  color: #fff;
+}
+
+.primary-button.is-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 82%, #8f1f2c);
+}
+
 .button-icon {
   font-family: var(--mono);
   font-size: 10px;
@@ -983,11 +1010,6 @@ button:disabled {
   background: #151f28;
   color: #8497a3;
   font-size: 8px;
-}
-
-.toolbar-button.danger:hover:not(:disabled) {
-  border-color: color-mix(in srgb, var(--danger) 48%, #263642);
-  color: var(--danger);
 }
 
 .terminal-stage {
@@ -1282,7 +1304,6 @@ button:disabled {
   flex: 0 0 auto;
 }
 
-.mobile-only,
 .panel-scrim {
   display: none;
 }
@@ -1293,6 +1314,17 @@ button:disabled {
 
 @keyframes toast-in {
   from { opacity: 0; transform: translateY(8px); }
+}
+
+.app-shell.panel-collapsed {
+  grid-template-columns: 0 minmax(0, 1fr);
+}
+
+.app-shell.panel-collapsed .connection-panel {
+  visibility: hidden;
+  padding-inline: 0;
+  border-right: 0;
+  opacity: 0;
 }
 
 @media (max-width: 960px) {
@@ -1322,10 +1354,6 @@ button:disabled {
   .app-shell {
     display: block;
     height: calc(100% - var(--topbar-height));
-  }
-
-  .mobile-only {
-    display: grid;
   }
 
   .runtime-badge {
@@ -1391,10 +1419,6 @@ button:disabled {
   .window-controls i {
     width: 7px;
     height: 7px;
-  }
-
-  .terminal-actions .toolbar-button:not(.danger) {
-    display: none;
   }
 
   .terminal-stage {
