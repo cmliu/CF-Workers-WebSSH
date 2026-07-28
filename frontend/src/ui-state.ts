@@ -17,15 +17,13 @@ export function resolveConnectionControl(state: ConnectionControlState, password
 export interface ConnectionPanelView {
   expanded: boolean;
   drawerOpen: boolean;
-  desktopCollapsed: boolean;
   scrimVisible: boolean;
 }
 
 export function resolveConnectionPanel(open: boolean, mobile: boolean): ConnectionPanelView {
   return {
-    expanded: open,
+    expanded: !mobile || open,
     drawerOpen: mobile && open,
-    desktopCollapsed: !mobile && !open,
     scrimVisible: mobile && open,
   };
 }

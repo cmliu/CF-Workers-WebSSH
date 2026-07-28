@@ -193,6 +193,10 @@ button:disabled {
   transition: background 150ms ease, color 150ms ease, border-color 150ms ease;
 }
 
+#panel-toggle {
+  display: none;
+}
+
 .icon-button:hover {
   background: var(--surface-2);
   color: var(--text);
@@ -1296,17 +1300,6 @@ button:disabled {
   from { opacity: 0; transform: translateY(8px); }
 }
 
-.app-shell.panel-collapsed {
-  grid-template-columns: 0 minmax(0, 1fr);
-}
-
-.app-shell.panel-collapsed .connection-panel {
-  visibility: hidden;
-  padding-inline: 0;
-  border-right: 0;
-  opacity: 0;
-}
-
 @media (max-width: 960px) {
   .app-shell {
     grid-template-columns: minmax(280px, 310px) minmax(0, 1fr);
@@ -1334,6 +1327,10 @@ button:disabled {
   .app-shell {
     display: block;
     height: calc(100% - var(--topbar-height));
+  }
+
+  #panel-toggle {
+    display: grid;
   }
 
   .connection-panel {

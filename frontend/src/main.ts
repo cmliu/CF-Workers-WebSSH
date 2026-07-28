@@ -241,7 +241,6 @@ function element<T extends HTMLElement>(id: string): T {
 }
 
 const ui = {
-  shell: element<HTMLElement>('app-shell'),
   panel: element<HTMLElement>('connection-panel'),
   panelToggle: element<HTMLButtonElement>('panel-toggle'),
   panelScrim: element<HTMLButtonElement>('panel-scrim'),
@@ -1039,13 +1038,12 @@ function fitTerminal(send = true): void {
 }
 
 function setPanelOpen(open: boolean): void {
-  panelOpen = open;
   const view = resolveConnectionPanel(open, panelMedia.matches);
-  if (!open && (connectionState === 'connecting' || connectionState === 'connected' || connectionState === 'disconnecting')) {
+  panelOpen = view.expanded;
+  if (!view.expanded && (connectionState === 'connecting' || connectionState === 'connected' || connectionState === 'disconnecting')) {
     invalidateHistoryPasswordLoad();
   }
   if (!view.expanded && ui.panel.contains(document.activeElement)) ui.panelToggle.focus();
-  ui.shell.classList.toggle('panel-collapsed', view.desktopCollapsed);
   ui.panel.classList.toggle('open', view.drawerOpen);
   ui.panel.inert = !view.expanded;
   ui.panel.setAttribute('aria-hidden', String(!view.expanded));
@@ -1097,7 +1095,7 @@ function markReady(message = bilingual('交互式 Shell 已就绪', 'Interactive
   if (connectionState === 'connected') return;
   invalidateHistoryPasswordLoad();
   setState('connected');
-  setPanelOpen(false);
+  if (panelMedia.matches) setPanelOpen(false);
   void saveConnectedProfile().catch(() => {
     toast(bilingual('连接成功，但无法更新历史记录。', 'Connected, but the history could not be updated.'), 'error');
   });
@@ -1713,7 +1711,7 @@ document.addEventListener('keydown', (keyEvent) => {
     ui.panelToggle.focus();
   }
 });
-panelMedia.addEventListener('change', (mediaEvent) => setPanelOpen(mediaEvent.matches ? false : panelOpen));
+panelMedia.addEventListener('change', (mediaEvent) => setPanelOpen(!mediaEvent.matches));
 
 let storedTheme: string | null = null;
 try { storedTheme = localStorage.getItem(THEME_STORAGE_KEY); } catch { /* Storage can be disabled. */ }
