@@ -66,6 +66,7 @@ export const SSH_MSG_KEX_ECDH_REPLY = 31;
 export const SSH_MSG_USERAUTH_REQUEST = 50;
 export const SSH_MSG_USERAUTH_FAILURE = 51;
 export const SSH_MSG_USERAUTH_SUCCESS = 52;
+export const SSH_MSG_USERAUTH_INFO_REQUEST = 60;
 export const SSH_MSG_GLOBAL_REQUEST = 80;
 export const SSH_MSG_REQUEST_SUCCESS = 81;
 export const SSH_MSG_REQUEST_FAILURE = 82;

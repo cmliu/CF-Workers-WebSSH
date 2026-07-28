@@ -1,5 +1,11 @@
 import { SSH_MSG_USERAUTH_REQUEST } from '../types';
 import { encodeString, concat, readUint32, toBufferSource } from './utils';
+import {
+  buildKeyboardInteractiveAuthRequest,
+  buildKeyboardInteractiveResponse,
+  buildPasswordAuthRequest,
+  isSupportedPasswordPrompt,
+} from './auth-password';
 
 // SSH key type constants
 const SSH_ED25519 = 'ssh-ed25519';
@@ -27,16 +33,19 @@ export class SSHAuth {
     username: string,
     password: string
   ): Uint8Array {
-    const parts: Uint8Array[] = [
-      new Uint8Array([SSH_MSG_USERAUTH_REQUEST]),
-      encodeString(username),
-      encodeString('ssh-connection'),
-      encodeString('password'),
-      new Uint8Array([0x00]),
-      encodeString(password),
-    ];
+    return buildPasswordAuthRequest(username, password);
+  }
 
-    return concat(...parts);
+  static buildKeyboardInteractiveAuthRequest(username: string): Uint8Array {
+    return buildKeyboardInteractiveAuthRequest(username);
+  }
+
+  static buildKeyboardInteractiveResponse(password: string, promptCount: number): Uint8Array {
+    return buildKeyboardInteractiveResponse(password, promptCount);
+  }
+
+  static isSupportedPasswordPrompt(prompt: string, echo: boolean): boolean {
+    return isSupportedPasswordPrompt(prompt, echo);
   }
 
   /** Build a signed public-key authentication request (RFC 4252 section 7). */

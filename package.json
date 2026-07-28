@@ -9,7 +9,8 @@
     "dev:web": "vite --config vite.config.ts",
     "build:web": "vite build --config vite.config.ts",
     "typecheck": "tsc -p tsconfig.worker.json --noEmit && tsc -p tsconfig.frontend.json --noEmit",
-    "check": "npm run typecheck && wrangler deploy --dry-run --outdir .wrangler/build",
+    "test": "node --test --experimental-strip-types tests/*.test.ts",
+    "check": "npm run typecheck && npm run test && wrangler deploy --dry-run --outdir .wrangler/build",
     "deploy": "wrangler deploy"
   },
   "dependencies": {

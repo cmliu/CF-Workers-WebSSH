@@ -22,6 +22,7 @@ import {
   SSH_MSG_SERVICE_REQUEST,
   SSH_MSG_UNIMPLEMENTED,
   SSH_MSG_USERAUTH_FAILURE,
+  SSH_MSG_USERAUTH_INFO_REQUEST,
   SSH_MSG_USERAUTH_SUCCESS,
   type SSHConnectionConfig,
   type SSHPacket,
@@ -42,6 +43,7 @@ import { KeyDerivation } from '../ssh/keys';
 import { SSHAESCTRCipher, SSHAESGCMCipher, SSHHMAC } from '../ssh/crypto';
 import { SSHAuth } from '../ssh/auth';
 import { SSHChannel, type ChannelDataChunk } from '../ssh/channel';
+import { classifyHostKey } from '../ssh/host-key';
 import { encodeString, readUint32, toBufferSource } from '../ssh/utils';
 
 type Cipher = SSHAESGCMCipher | SSHAESCTRCipher;
@@ -84,6 +86,7 @@ export class SSHSession {
   private verifier: SSHHMAC | null = null;
   private serverSigAlgs: string[] = [];
   private authRequestSent = false;
+  private passwordAuthMethod: 'password' | 'keyboard-interactive' = 'password';
   private pendingChannelRequest: 'pty' | 'shell' | null = null;
   private ignoreNextKexPacket = false;
   private inputQueue: Uint8Array[] = [];
@@ -157,6 +160,8 @@ export class SSHSession {
     this.queuedBytes = 0;
     this.pendingHostConfirmation?.resolve(false);
     this.pendingHostConfirmation = null;
+    this.config.password = undefined;
+    this.config.privateKey = undefined;
     try { this.writer?.releaseLock(); } catch { /* already released */ }
     this.writer = null;
     try { this.socket.close(); } catch { /* already closed */ }
@@ -351,11 +356,11 @@ export class SSHSession {
     const keyType = this.decoder.decode(hostKey.subarray(4, 4 + keyTypeLength));
     if (!this.isHostKeyAlgorithmCompatible(this.hostKeyAlgorithm, keyType)) throw new Error(`Server used ${keyType}, but negotiated ${this.hostKeyAlgorithm ?? 'no host key algorithm'}`);
     const fingerprint = `SHA256:${this.base64(new Uint8Array(await crypto.subtle.digest('SHA-256', toBufferSource(hostKey))))}`;
-    if (this.config.expectedFingerprint && this.config.expectedFingerprint !== fingerprint) throw new Error(`Host key mismatch: expected ${this.config.expectedFingerprint}, received ${fingerprint}`);
     if (!await this.verifyHostSignature(hostKey, signature, hash)) throw new Error('SSH host key signature verification failed');
-    if (this.config.expectedFingerprint) {
+    const trust = classifyHostKey(this.config.expectedFingerprint, fingerprint);
+    if (trust === 'trusted') {
       this.sendJson({ type: 'host_key', fingerprint, keyType, trusted: true });
-    } else if (!await this.confirmHostKey(fingerprint, keyType)) {
+    } else if (!await this.confirmHostKey(fingerprint, keyType, trust === 'changed' ? this.config.expectedFingerprint : undefined)) {
       throw new Error('Host key was not accepted');
     }
     this.status('host_key_verified', `Host key verified (${keyType})`);
@@ -380,7 +385,7 @@ export class SSHSession {
     await this.enableOutboundEncryption();
   }
 
-  private async confirmHostKey(fingerprint: string, keyType: string): Promise<boolean> {
+  private async confirmHostKey(fingerprint: string, keyType: string, expectedFingerprint?: string): Promise<boolean> {
     this.phase = 'host-confirm';
     this.status('host_key_confirmation', 'Confirm this host key before credentials are sent');
     return new Promise<boolean>((resolve) => {
@@ -396,7 +401,7 @@ export class SSHSession {
       const timeout = setTimeout(() => finish(false), 30_000);
       this.pendingHostConfirmation = { fingerprint, resolve: finish };
       // Register the decision handler before notifying the browser.
-      this.sendJson({ type: 'host_key', fingerprint, keyType, trusted: false });
+      this.sendJson({ type: 'host_key', fingerprint, keyType, trusted: false, expectedFingerprint });
     });
   }
 
@@ -477,14 +482,24 @@ export class SSHSession {
         ? await SSHAuth.buildPublicKeyAuthRequest(this.config.username, this.config.privateKey!, this.sessionId!, this.serverSigAlgs)
         : SSHAuth.buildPasswordAuthRequest(this.config.username, this.config.password!);
       this.authRequestSent = true;
-      this.config.password = undefined;
-      this.config.privateKey = undefined;
+      if (this.config.authMethod === 'publickey') this.config.privateKey = undefined;
       await this.sendEncrypted(request);
+      return;
+    }
+    if (type === SSH_MSG_USERAUTH_INFO_REQUEST) {
+      if (this.config.authMethod !== 'password' || this.passwordAuthMethod !== 'keyboard-interactive' || !this.authRequestSent) {
+        throw new Error('Unexpected SSH keyboard-interactive challenge');
+      }
+      const promptCount = this.validateKeyboardInteractiveRequest(payload);
+      const response = SSHAuth.buildKeyboardInteractiveResponse(this.config.password!, promptCount);
+      await this.sendEncrypted(response);
       return;
     }
     if (type === SSH_MSG_USERAUTH_SUCCESS) {
       if (payload.length !== 1) throw new Error('Malformed SSH authentication success');
       if (!this.authRequestSent) throw new Error('SSH authentication completed before credentials were sent');
+      this.config.password = undefined;
+      this.config.privateKey = undefined;
       this.status('auth_success', 'SSH authentication succeeded; opening terminal');
       this.phase = 'pty';
       this.startKeepalive();
@@ -493,7 +508,16 @@ export class SSHSession {
     }
     if (type === SSH_MSG_USERAUTH_FAILURE) {
       if (!this.authRequestSent) throw new Error('SSH authentication failed before credentials were sent');
-      this.validateAuthFailure(payload);
+      const methods = this.validateAuthFailure(payload);
+      if (this.config.authMethod === 'password'
+        && this.passwordAuthMethod === 'password'
+        && this.config.password !== undefined
+        && methods.includes('keyboard-interactive')) {
+        this.passwordAuthMethod = 'keyboard-interactive';
+        await this.sendEncrypted(SSHAuth.buildKeyboardInteractiveAuthRequest(this.config.username));
+        return;
+      }
+      this.config.password = undefined;
       throw new Error('SSH authentication failed');
     }
   }
@@ -688,7 +712,11 @@ export class SSHSession {
 
   private readString(bytes: Uint8Array, offset: number): { value: string; next: number } {
     const field = this.readBytes(bytes, offset);
-    return { value: this.decoder.decode(field.value), next: field.next };
+    try {
+      return { value: new TextDecoder('utf-8', { fatal: true }).decode(field.value), next: field.next };
+    } catch {
+      throw new Error('Malformed SSH text field');
+    }
   }
 
   private sshEcdsaToRaw(signature: Uint8Array, coordinateBytes: number): Uint8Array {
@@ -738,12 +766,42 @@ export class SSHSession {
     if (offset !== payload.length) throw new Error('Malformed SSH debug message');
   }
 
-  private validateAuthFailure(payload: Uint8Array): void {
+  private validateAuthFailure(payload: Uint8Array): string[] {
     if (payload.length < 6) throw new Error('Malformed SSH authentication failure');
     const methodsLength = readUint32(payload, 1);
     if (methodsLength > payload.length - 6 || methodsLength + 6 !== payload.length) {
       throw new Error('Malformed SSH authentication failure');
     }
+    const partialSuccess = payload[payload.length - 1];
+    if (partialSuccess > 1) throw new Error('Malformed SSH authentication partial-success flag');
+    if (partialSuccess === 1) throw new Error('Multi-factor SSH authentication is not supported');
+    let methods: string;
+    try { methods = new TextDecoder('utf-8', { fatal: true }).decode(payload.subarray(5, 5 + methodsLength)); }
+    catch { throw new Error('Malformed SSH authentication methods'); }
+    if (methods && methods.split(',').some((method) => method.length === 0 || !/^[A-Za-z0-9@._+-]+$/.test(method))) {
+      throw new Error('Malformed SSH authentication methods');
+    }
+    return methods ? methods.split(',') : [];
+  }
+
+  private validateKeyboardInteractiveRequest(payload: Uint8Array): number {
+    let offset = 1;
+    offset = this.readString(payload, offset).next; // name
+    offset = this.readString(payload, offset).next; // instruction
+    offset = this.readString(payload, offset).next; // language tag
+    if (offset + 4 > payload.length) throw new Error('Malformed SSH keyboard-interactive challenge');
+    const promptCount = readUint32(payload, offset);
+    offset += 4;
+    if (promptCount !== 1) throw new Error('SSH keyboard-interactive authentication requires exactly one prompt');
+    const prompt = this.readString(payload, offset);
+    offset = prompt.next;
+    if (offset >= payload.length || payload[offset] > 1 || offset + 1 !== payload.length) {
+      throw new Error('Malformed SSH keyboard-interactive prompt');
+    }
+    if (!SSHAuth.isSupportedPasswordPrompt(prompt.value, payload[offset] === 1)) {
+      throw new Error('SSH keyboard-interactive prompt is not a supported password prompt');
+    }
+    return promptCount;
   }
 
   private isHostKeyAlgorithmCompatible(negotiated: string | null, keyType: string): boolean {
