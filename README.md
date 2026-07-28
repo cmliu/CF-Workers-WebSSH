@@ -52,7 +52,7 @@ Cloudflare Worker
 ## 部署教程
 
 1. Fork 该项目到用户自己的 GitHub 仓库。
-2. 在部署平台（如 Vercel）点击 "Continue with GitHub" 按钮，选择已 Fork 的项目进行部署。
+2. 在 `Cloudflare` > `Workers 和 Pages` > `创建应用程序` > `Continue with GitHub` 按钮，选择已 Fork 的项目进行部署。
 3. 在"构建命令"（Build Command）一栏中填入 `npm run deploy`。
 4. 点击"部署"按钮即可完成部署。
 
