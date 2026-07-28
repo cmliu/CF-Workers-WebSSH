@@ -11,6 +11,7 @@ import { encodeString, readUint32, writeUint32 } from './utils';
 const SESSION_FIELD = encodeString('session');
 const PTY_REQ_FIELD = encodeString('pty-req');
 const SHELL_FIELD = encodeString('shell');
+const SUBSYSTEM_FIELD = encodeString('subsystem');
 const WINDOW_CHANGE_FIELD = encodeString('window-change');
 const EMPTY_TERMINAL_MODES_FIELD = encodeString(new Uint8Array([0]));
 const UINT32_MAX = 0xffffffff;
@@ -37,12 +38,26 @@ export class SSHChannel {
   private remoteMaxPacketSize: number = DEFAULT_MAX_PACKET_SIZE;
   private consumedSinceWindowAdjust: number = 0;
   private eofReceived: boolean = false;
+  private eofSent: boolean = false;
   private closeSent: boolean = false;
   private closeReceived: boolean = false;
   private openConfirmed: boolean = false;
 
   isClosed(): boolean {
     return this.closeSent && this.closeReceived;
+  }
+
+  getLocalChannelID(): number {
+    return this.localChannelID;
+  }
+
+  getRemoteChannelID(): number {
+    if (!this.openConfirmed) throw new Error('Channel is not open');
+    return this.remoteChannelID;
+  }
+
+  isOpen(): boolean {
+    return this.openConfirmed && !this.closeReceived;
   }
 
   hasSentClose(): boolean {
@@ -130,12 +145,35 @@ export class SSHChannel {
     return payload;
   }
 
+  buildSubsystemRequest(subsystem: string): Uint8Array {
+    if (!/^[A-Za-z0-9@._+-]{1,64}$/.test(subsystem)) throw new Error('Invalid SSH subsystem name');
+    const subsystemField = encodeString(subsystem);
+    const payload = new Uint8Array(1 + 4 + SUBSYSTEM_FIELD.length + 1 + subsystemField.length);
+    let offset = 0;
+    payload[offset++] = SSH_MSG_CHANNEL_REQUEST;
+    writeUint32(payload, offset, this.getRemoteChannelID());
+    offset += 4;
+    offset = writeBytes(payload, offset, SUBSYSTEM_FIELD);
+    payload[offset++] = 0x01;
+    writeBytes(payload, offset, subsystemField);
+    return payload;
+  }
+
   buildClose(): Uint8Array {
     if (this.closeSent) throw new Error('Channel close was already sent');
     this.closeSent = true;
     const payload = new Uint8Array(5);
     payload[0] = SSH_MSG_CHANNEL_CLOSE;
     writeUint32(payload, 1, this.remoteChannelID);
+    return payload;
+  }
+
+  buildEof(): Uint8Array {
+    if (this.eofSent) throw new Error('Channel EOF was already sent');
+    this.eofSent = true;
+    const payload = new Uint8Array(5);
+    payload[0] = SSH_MSG_CHANNEL_EOF;
+    writeUint32(payload, 1, this.getRemoteChannelID());
     return payload;
   }
 

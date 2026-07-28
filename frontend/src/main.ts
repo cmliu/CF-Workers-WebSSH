@@ -6,6 +6,7 @@ import { getHistoryPasswordKey } from './history-key';
 import { decryptPasswordResult, encryptPassword, isEncryptedPassword } from './password-crypto';
 import { resolveConnectionControl, resolveConnectionPanel } from './ui-state';
 import { classifyHostKey, SSH_FINGERPRINT_RE, type HostKeyPrompt } from './host-key';
+import { FileManager, collectFileManagerElements } from './file-manager';
 import './style.css';
 
 type AuthMethod = 'password' | 'publickey';
@@ -70,6 +71,7 @@ interface ServerMessage {
   colo?: string;
   ts?: number;
   algorithms?: Record<string, string>;
+  url?: string;
 }
 
 interface WSSHOptions {
@@ -110,6 +112,8 @@ const LANGUAGE_STORAGE_KEY = 'workers-webssh.language';
 const MAX_KEY_BYTES = 65_536;
 const MAX_LEGACY_PASSWORD_BASE64_LENGTH = 16_384;
 const PING_INTERVAL_MS = 25_000;
+const CLIENT_CLOSE_SESSION_ERROR = 4000;
+const CLIENT_CLOSE_PROTOCOL_ERROR = 4002;
 
 function loadLanguage(): Language {
   try {
@@ -181,6 +185,7 @@ const EVENT_LABELS: Record<string, Translation> = {
   error: ['错误', 'error'],
   debug: ['调试', 'debug'],
   'host-key': ['主机密钥', 'host key'],
+  sftp: ['文件管理', 'files'],
 };
 
 const SERVER_EVENT_MESSAGES: Record<string, Translation> = {
@@ -285,6 +290,8 @@ const ui = {
   clearTerminal: element<HTMLButtonElement>('clear-terminal'),
   fullscreenTerminal: element<HTMLButtonElement>('fullscreen-terminal'),
   eventMessage: element<HTMLElement>('event-message'),
+  fileManagerTab: element<HTMLButtonElement>('file-manager-tab'),
+  fileManagerPanel: element<HTMLElement>('file-manager-panel'),
   eventToggle: element<HTMLButtonElement>('event-toggle'),
   eventLog: element<HTMLElement>('event-log'),
   toastRegion: element<HTMLElement>('toast-region'),
@@ -326,6 +333,9 @@ function applyLanguage(language: Language, persist = false): void {
   for (const node of document.querySelectorAll<HTMLElement>('[data-i18n-aria-label-zh][data-i18n-aria-label-en]')) {
     node.setAttribute('aria-label', language === 'zh-CN' ? node.dataset.i18nAriaLabelZh! : node.dataset.i18nAriaLabelEn!);
   }
+  for (const node of document.querySelectorAll<HTMLElement>('[data-i18n-title-zh][data-i18n-title-en]')) {
+    node.setAttribute('title', language === 'zh-CN' ? node.dataset.i18nTitleZh! : node.dataset.i18nTitleEn!);
+  }
   for (const node of document.querySelectorAll<HTMLElement>('[data-i18n-content-zh][data-i18n-content-en]')) {
     node.setAttribute('content', language === 'zh-CN' ? node.dataset.i18nContentZh! : node.dataset.i18nContentEn!);
   }
@@ -348,6 +358,7 @@ function applyLanguage(language: Language, persist = false): void {
       copy.textContent = bilingual(copy.dataset.messageZh, copy.dataset.messageEn);
     }
   }
+  if (fileManager) fileManager.setLanguage();
 
   if (persist) {
     try { localStorage.setItem(LANGUAGE_STORAGE_KEY, language); } catch { /* Language still applies for this page. */ }
@@ -386,6 +397,7 @@ let keyFileReadGeneration = 0;
 const latestHistoryMutation = new Map<string, number>();
 const panelMedia = window.matchMedia('(max-width: 760px)');
 let panelOpen = !panelMedia.matches;
+let fileManager: FileManager;
 
 const terminal = new Terminal({
   allowProposedApi: false,
@@ -404,6 +416,11 @@ const fitAddon = new FitAddon();
 terminal.loadAddon(fitAddon);
 terminal.loadAddon(new WebLinksAddon());
 terminal.open(ui.terminalElement);
+fileManager = new FileManager({
+  elements: collectFileManagerElements(),
+  getLanguage: () => currentLanguage,
+  onError: (message) => event(message, 'sftp', true),
+});
 
 function terminalTheme(): Record<string, string> {
   return {
@@ -1193,6 +1210,29 @@ function sendHostKeyDecision(accept: boolean): void {
     : bilingual('主机密钥已拒绝。', 'Host key rejected.'), 'host-key', !accept);
 }
 
+type WorkspaceTab = 'files' | 'log';
+
+function setWorkspaceTab(tab: WorkspaceTab, focus = false): void {
+  const filesActive = tab === 'files';
+  ui.fileManagerPanel.hidden = !filesActive;
+  ui.eventLog.hidden = filesActive;
+  ui.fileManagerTab.setAttribute('aria-selected', String(filesActive));
+  ui.eventToggle.setAttribute('aria-selected', String(!filesActive));
+  ui.eventToggle.setAttribute('aria-expanded', String(!filesActive));
+  ui.fileManagerTab.tabIndex = filesActive ? 0 : -1;
+  ui.eventToggle.tabIndex = filesActive ? -1 : 0;
+  if (!filesActive) requestAnimationFrame(() => { ui.eventLog.scrollTop = ui.eventLog.scrollHeight; });
+  if (focus) (filesActive ? ui.fileManagerTab : ui.eventToggle).focus();
+  requestAnimationFrame(() => fitTerminal(true));
+}
+
+function handleWorkspaceTabKey(event: KeyboardEvent): void {
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+  event.preventDefault();
+  const files = event.key === 'Home' || (event.key !== 'End' && event.currentTarget === ui.eventToggle);
+  setWorkspaceTab(files ? 'files' : 'log', true);
+}
+
 function configureHostKeyDialog(hostKey: HostKeyPrompt): void {
   const changed = hostKey.trust === 'changed';
   ui.hostKeyDialog.classList.toggle('changed', changed);
@@ -1231,6 +1271,20 @@ function clearHostKeyPrompt(): void {
 
 function handleServerMessage(message: ServerMessage): void {
   const type = message.type ?? 'status';
+  if (type === 'sftp_attach') {
+    if (typeof message.url !== 'string' || !message.url.startsWith('/api/sftp?')) {
+      event(bilingual('收到无效的文件管理连接信息。', 'Received invalid file-management connection details.'), 'protocol', true);
+      return;
+    }
+    try {
+      fileManager.attach(message.url);
+    } catch {
+      event(bilingual('无法打开文件管理连接。', 'Could not open the file-management connection.'), 'sftp', true);
+      return;
+    }
+    event(bilingual('文件管理通道已可用。', 'File management channel is available.'), 'sftp');
+    return;
+  }
   if (type === 'pong') {
     if (lastPingAt > 0) ui.metricRtt.textContent = `${Math.max(1, Math.round(performance.now() - lastPingAt))} ms`;
     return;
@@ -1249,7 +1303,7 @@ function handleServerMessage(message: ServerMessage): void {
       || (expected !== '' && !SSH_FINGERPRINT_RE.test(expected))
       || (message.expectedFingerprint !== undefined && message.expectedFingerprint !== currentExpectedFingerprint)) {
       event(bilingual('收到无效的主机密钥消息。', 'Received an invalid host key message.'), 'protocol', true);
-      socket?.close(1002, 'Invalid host key message');
+      socket?.close(CLIENT_CLOSE_PROTOCOL_ERROR, 'Invalid host key message');
       return;
     }
     ui.metricHostKey.textContent = keyType.replace('ssh-', '').replace('ecdsa-sha2-', '');
@@ -1257,7 +1311,7 @@ function handleServerMessage(message: ServerMessage): void {
     const trust = classifyHostKey(expected, fingerprint);
     if (message.trusted !== (trust === 'matched')) {
       event(bilingual('收到不一致的主机密钥信任消息。', 'Received an inconsistent trusted host key message.'), 'protocol', true);
-      socket?.close(1002, 'Invalid trusted host key message');
+      socket?.close(CLIENT_CLOSE_PROTOCOL_ERROR, 'Invalid trusted host key message');
       return;
     }
     if (trust === 'matched') {
@@ -1309,10 +1363,24 @@ function handleServerMessage(message: ServerMessage): void {
 async function handleSocketData(data: string | ArrayBuffer | Blob, activeSocket: WebSocket, generation: number): Promise<void> {
   if (socket !== activeSocket || generation !== connectGeneration) return;
   if (typeof data === 'string') {
+    let parsed: unknown;
     try {
-      handleServerMessage(JSON.parse(data) as ServerMessage);
+      parsed = JSON.parse(data);
     } catch {
       event(bilingual('已忽略无效的控制帧。', 'Ignored an invalid control frame.'), 'protocol', true);
+      return;
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      event(bilingual('已忽略无效的控制帧。', 'Ignored an invalid control frame.'), 'protocol', true);
+      return;
+    }
+    try {
+      handleServerMessage(parsed as ServerMessage);
+    } catch {
+      event(bilingual('处理服务器控制消息时发生错误。', 'Failed to process the server control message.'), 'protocol', true);
+      if (activeSocket.readyState < WebSocket.CLOSING) {
+        activeSocket.close(CLIENT_CLOSE_PROTOCOL_ERROR, 'Control message handling failed');
+      }
     }
     return;
   }
@@ -1336,12 +1404,13 @@ function failActiveConnection(activeSocket: WebSocket | null, closeReason: strin
   currentExpectedFingerprint = '';
   currentRememberedFingerprint = '';
   stopTimers();
+  fileManager.reset();
   clearHostKeyPrompt();
   invalidateHistoryPasswordLoad();
   currentSessionSubtitle = displayReason;
   ui.sessionSubtitle.textContent = localize(displayReason);
   setState('error');
-  if (activeSocket && activeSocket.readyState < WebSocket.CLOSING) activeSocket.close(1011, closeReason);
+  if (activeSocket && activeSocket.readyState < WebSocket.CLOSING) activeSocket.close(CLIENT_CLOSE_SESSION_ERROR, closeReason);
 }
 
 async function issueTicket(signal: AbortSignal): Promise<{ ticket: string; sessionId: string }> {
@@ -1477,6 +1546,7 @@ async function connect(): Promise<void> {
       currentExpectedFingerprint = '';
       currentRememberedFingerprint = '';
       stopTimers();
+      fileManager.reset();
       clearHostKeyPrompt();
       invalidateHistoryPasswordLoad();
       const wasActive = connectionState === 'connected';
@@ -1519,6 +1589,7 @@ function disconnect(reason = bilingual('已由用户断开连接', 'Disconnected
   const activeSocket = socket;
   socket = null;
   stopTimers();
+  fileManager.reset();
   clearHostKeyPrompt();
   invalidateHistoryPasswordLoad();
   currentExpectedFingerprint = '';
@@ -1776,11 +1847,10 @@ ui.fullscreenTerminal.addEventListener('click', async () => {
   else await ui.terminalCard.requestFullscreen();
 });
 document.addEventListener('fullscreenchange', () => fitTerminal(true));
-ui.eventToggle.addEventListener('click', () => {
-  ui.eventLog.hidden = !ui.eventLog.hidden;
-  ui.eventToggle.setAttribute('aria-expanded', String(!ui.eventLog.hidden));
-  fitTerminal(true);
-});
+ui.fileManagerTab.addEventListener('click', () => setWorkspaceTab('files'));
+ui.eventToggle.addEventListener('click', () => setWorkspaceTab('log'));
+ui.fileManagerTab.addEventListener('keydown', handleWorkspaceTabKey);
+ui.eventToggle.addEventListener('keydown', handleWorkspaceTabKey);
 ui.languageToggle.addEventListener('click', () => {
   applyLanguage(currentLanguage === 'zh-CN' ? 'en' : 'zh-CN', true);
   renderProfiles();
@@ -1802,7 +1872,10 @@ ui.hostKeyDialog.addEventListener('close', () => {
 });
 terminal.onData(sendTerminalData);
 new ResizeObserver(() => fitTerminal(true)).observe(ui.terminalStage);
-window.addEventListener('beforeunload', () => socket?.close(1000, 'Page closed'));
+window.addEventListener('beforeunload', () => {
+  fileManager.reset();
+  socket?.close(1000, 'Page closed');
+});
 document.addEventListener('keydown', (keyEvent) => {
   if (keyEvent.key === 'Escape' && panelMedia.matches && panelOpen && !ui.hostKeyDialog.open) {
     setPanelOpen(false);
@@ -1822,6 +1895,7 @@ async function initialize(): Promise<void> {
   setPanelOpen(panelOpen);
   setAuthMethod('password');
   setState('idle');
+  setWorkspaceTab('files');
   ui.sessionTitle.textContent = bilingual('无活动会话', 'No active session');
   ui.sessionSubtitle.textContent = bilingual('选择目标并连接', 'Choose a target and connect');
   ui.eventMessage.textContent = bilingual('Worker 运行时待命', 'Worker runtime standing by');
@@ -1842,5 +1916,6 @@ void initialize().catch(() => {
   setPanelOpen(panelOpen);
   setAuthMethod('password');
   setState('idle');
+  setWorkspaceTab('files');
   initializeCompatibilityAPI();
 });

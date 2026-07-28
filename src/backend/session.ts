@@ -43,14 +43,23 @@ import { KeyDerivation } from '../ssh/keys';
 import { SSHAESCTRCipher, SSHAESGCMCipher, SSHHMAC } from '../ssh/crypto';
 import { SSHAuth } from '../ssh/auth';
 import { SSHChannel, type ChannelDataChunk } from '../ssh/channel';
+import { SFTPHandler } from './sftp-handler';
 import { classifyHostKey } from '../ssh/host-key';
 import { encodeString, readUint32, toBufferSource } from '../ssh/utils';
 
 type Cipher = SSHAESGCMCipher | SSHAESCTRCipher;
 type Phase = 'version' | 'kex' | 'host-confirm' | 'auth' | 'pty' | 'shell' | 'ready' | 'closed';
+interface PendingSFTPChannelOpen {
+  readonly channelID: number;
+  readonly channel: SSHChannel;
+  timeout: ReturnType<typeof setTimeout> | null;
+  cancelled: boolean;
+}
 const LOCAL_WINDOW_THRESHOLD = 512 * 1024;
 const MAX_VERSION_BYTES = 8192;
 const MAX_QUEUED_INPUT = 1024 * 1024;
+const MAX_QUEUED_SFTP_UPLOAD = 1024 * 1024;
+const SFTP_CHANNEL_OPEN_TIMEOUT_MS = 15_000;
 const KEEPALIVE_NAME = new TextEncoder().encode('keepalive@openssh.com');
 
 export class SSHSession {
@@ -58,7 +67,8 @@ export class SSHSession {
   private readonly decoder = new TextDecoder();
   private readonly transport = new SSHTransport();
   private readonly parser = new SSHPacketParser();
-  private readonly channel = new SSHChannel();
+  private readonly shellChannel = new SSHChannel();
+  private readonly channels = new Map<number, SSHChannel>([[0, this.shellChannel]]);
   private readonly config: SSHConnectionConfig;
   private readonly ws: WebSocket;
   private readonly socket: Socket;
@@ -87,7 +97,17 @@ export class SSHSession {
   private serverSigAlgs: string[] = [];
   private authRequestSent = false;
   private passwordAuthMethod: 'password' | 'keyboard-interactive' = 'password';
+  private keyboardInteractiveRounds = 0;
+  private keyboardInteractivePasswordSent = false;
   private pendingChannelRequest: 'pty' | 'shell' | null = null;
+  private nextChannelID = 1;
+  private sftpChannel: SSHChannel | null = null;
+  private sftpHandler: SFTPHandler | null = null;
+  private sftpWebSocket: WebSocket | null = null;
+  private sftpAttachUrl = '';
+  private sftpTaskChain: Promise<void> = Promise.resolve();
+  private sftpQueuedUploadBytes = 0;
+  private pendingSFTPChannelOpen: PendingSFTPChannelOpen | null = null;
   private ignoreNextKexPacket = false;
   private inputQueue: Uint8Array[] = [];
   private queueHeadOffset = 0;
@@ -158,6 +178,13 @@ export class SSHSession {
     this.shellTimer = null;
     this.inputQueue = [];
     this.queuedBytes = 0;
+    this.sftpHandler?.dispose();
+    this.sftpHandler = null;
+    this.sftpChannel = null;
+    this.clearPendingSFTPChannelOpen();
+    this.channels.clear();
+    try { this.sftpWebSocket?.close(normal ? 1000 : 1011, normal ? 'SSH session closed' : 'SSH session failed'); } catch { /* already closed */ }
+    this.sftpWebSocket = null;
     this.pendingHostConfirmation?.resolve(false);
     this.pendingHostConfirmation = null;
     this.config.password = undefined;
@@ -490,8 +517,26 @@ export class SSHSession {
       if (this.config.authMethod !== 'password' || this.passwordAuthMethod !== 'keyboard-interactive' || !this.authRequestSent) {
         throw new Error('Unexpected SSH keyboard-interactive challenge');
       }
-      const promptCount = this.validateKeyboardInteractiveRequest(payload);
-      const response = SSHAuth.buildKeyboardInteractiveResponse(this.config.password!, promptCount);
+      this.keyboardInteractiveRounds++;
+      if (this.keyboardInteractiveRounds > 16) throw new Error('Too many SSH keyboard-interactive challenge rounds');
+      const challenge = SSHAuth.parseKeyboardInteractiveChallenge(payload);
+      let responses: string[];
+      if (challenge.prompts.length === 0) {
+        responses = [];
+      } else {
+        if (this.keyboardInteractivePasswordSent || this.config.password === undefined) {
+          throw new Error('SSH keyboard-interactive requested credentials more than once');
+        }
+        responses = SSHAuth.passwordResponsesForChallenge(challenge, this.config.password, {
+          username: this.config.username,
+          host: this.config.host,
+        });
+      }
+      const response = SSHAuth.buildKeyboardInteractiveResponse(responses);
+      if (responses.length > 0) {
+        this.keyboardInteractivePasswordSent = true;
+        this.config.password = undefined;
+      }
       await this.sendEncrypted(response);
       return;
     }
@@ -503,7 +548,7 @@ export class SSHSession {
       this.status('auth_success', 'SSH authentication succeeded; opening terminal');
       this.phase = 'pty';
       this.startKeepalive();
-      await this.sendEncrypted(this.channel.buildOpenSession(0));
+      await this.sendEncrypted(this.shellChannel.buildOpenSession(0));
       return;
     }
     if (type === SSH_MSG_USERAUTH_FAILURE) {
@@ -523,60 +568,132 @@ export class SSHSession {
   }
 
   private async handleChannel(type: number, payload: Uint8Array): Promise<void> {
+    if (payload.length < 5) throw new Error('Malformed SSH channel message');
+    const channelID = readUint32(payload, 1);
+    const channel = this.channels.get(channelID);
+    if (!channel) throw new Error('SSH channel message has an unknown recipient');
+    const isShell = channel === this.shellChannel;
     if (type === SSH_MSG_CHANNEL_OPEN_CONFIRMATION) {
-      if (this.phase !== 'pty') throw new Error('Unexpected channel open confirmation');
-      this.channel.handleOpenConfirmation(payload);
-      this.pendingChannelRequest = 'pty';
-      await this.sendEncrypted(this.channel.buildPTYRequest(this.config.cols, this.config.rows, this.config.term));
+      channel.handleOpenConfirmation(payload);
+      if (isShell) {
+        if (this.phase !== 'pty') throw new Error('Unexpected shell channel open confirmation');
+        this.pendingChannelRequest = 'pty';
+        await this.sendEncrypted(channel.buildPTYRequest(this.config.cols, this.config.rows, this.config.term));
+      } else if (channel === this.sftpChannel && this.sftpHandler && !this.pendingSFTPChannelOpen?.cancelled) {
+        try {
+          await this.sendEncrypted(channel.buildSubsystemRequest('sftp'));
+        } catch (error) {
+          this.clearPendingSFTPChannelOpen(channel);
+          this.sftpHandler.dispose();
+          this.sftpHandler = null;
+          this.sftpChannel = null;
+          await this.sendSFTPChannelClose(channel);
+          throw error;
+        }
+      } else {
+        // The file WebSocket may close while the channel open is in flight.
+        this.clearPendingSFTPChannelOpen(channel);
+        await this.sendSFTPChannelClose(channel);
+      }
       return;
     }
     if (type === SSH_MSG_CHANNEL_OPEN_FAILURE) {
-      this.channel.handleOpenFailure(payload);
-      throw new Error('SSH server rejected the session channel');
+      channel.handleOpenFailure(payload);
+      this.clearPendingSFTPChannelOpen(channel);
+      this.channels.delete(channelID);
+      if (isShell) throw new Error('SSH server rejected the session channel');
+      if (channel === this.sftpChannel) {
+        this.sftpHandler?.dispose();
+        this.sftpHandler = null;
+        this.sftpChannel = null;
+        this.sendSFTPError('init', 'SSH server rejected the SFTP channel');
+      }
+      return;
     }
     if (type === SSH_MSG_CHANNEL_SUCCESS || type === SSH_MSG_CHANNEL_FAILURE) {
-      this.channel.handleRequestResult(payload);
-      const pending = this.pendingChannelRequest;
-      if (!pending || pending !== this.phase) throw new Error('Unexpected SSH channel request result');
-      this.pendingChannelRequest = null;
-      if (type === SSH_MSG_CHANNEL_FAILURE) throw new Error(`SSH server rejected the ${pending === 'pty' ? 'PTY' : 'shell'} request`);
-      if (pending === 'pty') {
-        this.phase = 'shell';
-        this.pendingChannelRequest = 'shell';
-        await this.sendEncrypted(this.channel.buildShellRequest());
-        this.shellTimer = setTimeout(() => this.markReady(), 3000);
-      } else this.markReady();
+      channel.handleRequestResult(payload);
+      this.clearPendingSFTPChannelOpen(channel);
+      if (isShell) {
+        const pending = this.pendingChannelRequest;
+        if (!pending || pending !== this.phase) throw new Error('Unexpected SSH channel request result');
+        this.pendingChannelRequest = null;
+        if (type === SSH_MSG_CHANNEL_FAILURE) throw new Error(`SSH server rejected the ${pending === 'pty' ? 'PTY' : 'shell'} request`);
+        if (pending === 'pty') {
+          this.phase = 'shell';
+          this.pendingChannelRequest = 'shell';
+          await this.sendEncrypted(channel.buildShellRequest());
+          this.shellTimer = setTimeout(() => this.markReady(), 3000);
+        } else this.markReady();
+      } else if (channel === this.sftpChannel && type === SSH_MSG_CHANNEL_SUCCESS) {
+        const handler = this.sftpHandler;
+        if (handler) {
+          void handler.initialize().then((ready) => {
+            if (!ready && this.sftpHandler === handler) void this.closeSFTPChannel();
+          });
+        }
+      } else if (channel === this.sftpChannel) {
+        this.sftpHandler?.dispose();
+        this.sftpHandler = null;
+        this.sftpChannel = null;
+        this.sendSFTPError('init', 'SSH server rejected the SFTP subsystem');
+        await this.sendSFTPChannelClose(channel);
+      }
       return;
     }
     if (type === SSH_MSG_CHANNEL_DATA) {
-      if (this.phase === 'shell') this.markReady();
-      const output = this.channel.handleChannelData(payload);
-      this.ws.send(output);
-      await this.adjustLocalWindow();
+      const output = channel.handleChannelData(payload);
+      if (isShell) {
+        if (this.phase === 'shell') this.markReady();
+        this.ws.send(output);
+      } else if (channel === this.sftpChannel && this.sftpHandler) {
+        try {
+          this.sftpHandler.feed(output);
+        } catch (error) {
+          this.sendSFTPError('protocol', error instanceof Error ? error.message : String(error));
+          await this.closeSFTPChannel();
+        }
+      }
+      await this.adjustLocalWindow(channel);
       return;
     }
     if (type === SSH_MSG_CHANNEL_EXTENDED_DATA) {
-      if (this.phase === 'shell') this.markReady();
-      const output = this.channel.handleExtendedData(payload);
-      this.ws.send(output);
-      await this.adjustLocalWindow();
+      const output = channel.handleExtendedData(payload);
+      if (isShell) {
+        if (this.phase === 'shell') this.markReady();
+        this.ws.send(output);
+      } else if (channel === this.sftpChannel) {
+        this.sendSFTPError('protocol', new TextDecoder().decode(output) || 'SFTP channel reported an error');
+      }
+      await this.adjustLocalWindow(channel);
       return;
     }
     if (type === SSH_MSG_CHANNEL_WINDOW_ADJUST) {
-      this.channel.handleWindowAdjust(payload);
-      void this.flushInput();
+      channel.handleWindowAdjust(payload);
+      if (isShell) void this.flushInput();
+      else if (channel === this.sftpChannel) this.sftpHandler?.onWindowAdjust();
       return;
     }
     if (type === SSH_MSG_CHANNEL_EOF) {
-      this.channel.handleEof(payload);
-      this.status('remote_eof', 'SSH server finished sending output');
+      channel.handleEof(payload);
+      if (isShell) this.status('remote_eof', 'SSH server finished sending output');
+      else if (channel === this.sftpChannel) this.sftpHandler?.onClosed();
       return;
     }
     if (type === SSH_MSG_CHANNEL_CLOSE) {
-      this.channel.handleClose(payload);
-      if (!this.channel.hasSentClose()) await this.sendEncrypted(this.channel.buildClose());
-      this.status('session_ended', 'SSH session ended');
-      this.close(true);
+      channel.handleClose(payload);
+      if (!channel.hasSentClose()) await this.sendEncrypted(channel.buildClose());
+      if (isShell) {
+        this.status('session_ended', 'SSH session ended');
+        this.close(true);
+      } else {
+        this.clearPendingSFTPChannelOpen(channel);
+        this.channels.delete(channelID);
+        if (channel === this.sftpChannel) {
+          this.sftpHandler?.onClosed();
+          this.sftpHandler = null;
+          this.sftpChannel = null;
+        }
+      }
       return;
     }
   }
@@ -592,7 +709,225 @@ export class SSHSession {
       negotiated: { kex: this.kexName, cipherC2S: this.cipherC2S, cipherS2C: this.cipherS2C, macC2S: this.macC2S, macS2C: this.macS2C },
     });
     this.status('shell_ready', 'Shell is ready');
+    if (this.sftpAttachUrl) this.sendJson({ type: 'sftp_attach', url: this.sftpAttachUrl });
     void this.flushInput();
+  }
+
+  setSFTPAttachUrl(url: string): void {
+    if (!/^\/api\/ssh\/sftp\?/.test(url)) throw new Error('Invalid SFTP attach URL');
+    this.sftpAttachUrl = url;
+  }
+
+  attachSFTPWebSocket(ws: WebSocket): void {
+    if (this.phase === 'closed' || this.sftpWebSocket) {
+      try { ws.close(1008, 'SFTP connection is unavailable'); } catch { /* already closed */ }
+      return;
+    }
+    this.sftpWebSocket = ws;
+  }
+
+  detachSFTPWebSocket(ws: WebSocket): void {
+    if (this.sftpWebSocket !== ws) return;
+    this.sftpWebSocket = null;
+    void this.closeSFTPChannel();
+  }
+
+  async handleSFTPClientMessage(message: string | ArrayBuffer): Promise<void> {
+    if (this.phase === 'closed' || !this.sftpWebSocket) return;
+    if (message instanceof ArrayBuffer) {
+      if (message.byteLength === 0 || message.byteLength > 64 * 1024) {
+        this.sendSFTPError('upload', 'Invalid upload chunk');
+        return;
+      }
+      if (this.sftpQueuedUploadBytes + message.byteLength > MAX_QUEUED_SFTP_UPLOAD) {
+        this.sendSFTPError('upload', 'Upload queue limit exceeded');
+        return;
+      }
+      const chunk = new Uint8Array(message);
+      this.sftpQueuedUploadBytes += chunk.byteLength;
+      await this.queueSFTPTask('upload', undefined, async () => {
+        try {
+          if (!this.sftpHandler) throw new Error('SFTP is not initialized');
+          await this.sftpHandler.uploadChunk(chunk);
+        } finally {
+          this.sftpQueuedUploadBytes = Math.max(0, this.sftpQueuedUploadBytes - chunk.byteLength);
+        }
+      });
+      return;
+    }
+    if (message.length > 16 * 1024) {
+      this.sendSFTPError('protocol', 'SFTP control message is too large');
+      return;
+    }
+    let value: Record<string, unknown>;
+    try {
+      const parsed = JSON.parse(message) as unknown;
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error();
+      value = parsed as Record<string, unknown>;
+    } catch {
+      this.sendSFTPError('protocol', 'Invalid SFTP control message');
+      return;
+    }
+    if (value.type === 'ping') { this.sendSFTPJson({ type: 'pong' }); return; }
+    if (value.type === 'sftp_download_cancel') {
+      try {
+        const requestId = this.requestId(value.requestId);
+        if (!this.sftpHandler) throw new Error('SFTP is not initialized');
+        this.sftpHandler.cancelDownload(requestId);
+      } catch (error) {
+        this.sendSFTPError('download', error instanceof Error ? error.message : String(error));
+      }
+      return;
+    }
+    const operation = typeof value.type === 'string' ? value.type.replace(/^sftp_/, '') : 'protocol';
+    await this.queueSFTPTask(operation, this.requestId(value.requestId, false), () => this.handleSFTPControl(value));
+  }
+
+  private async handleSFTPControl(value: Record<string, unknown>): Promise<void> {
+    const type = typeof value.type === 'string' ? value.type : '';
+    if (type === 'sftp_close') { await this.closeSFTPChannel(); return; }
+    if (this.phase !== 'ready') throw new Error('SSH connection is not ready');
+    if (type === 'sftp_init') {
+      await this.openSFTPChannel();
+      return;
+    }
+    if (!this.sftpHandler) throw new Error('SFTP is not initialized');
+    const requestId = this.requestId(value.requestId);
+    if (type === 'sftp_list') return this.sftpHandler.list(requestId, this.path(value.path));
+    if (type === 'sftp_download') return this.sftpHandler.download(requestId, this.path(value.path));
+    if (type === 'sftp_upload_start') {
+      if (typeof value.size !== 'number') throw new Error('Invalid upload size');
+      if (typeof value.overwrite !== 'boolean') throw new Error('Invalid upload overwrite option');
+      return this.sftpHandler.startUpload(requestId, this.path(value.path), value.size, value.overwrite);
+    }
+    if (type === 'sftp_upload_end') return this.sftpHandler.finishUpload(requestId);
+    if (type === 'sftp_upload_cancel') return this.sftpHandler.cancelUpload(requestId);
+    if (type === 'sftp_delete') return this.sftpHandler.remove(requestId, this.path(value.path), false);
+    if (type === 'sftp_rmdir') return this.sftpHandler.remove(requestId, this.path(value.path), true);
+    if (type === 'sftp_mkdir') return this.sftpHandler.mkdir(requestId, this.path(value.path));
+    if (type === 'sftp_rename') return this.sftpHandler.rename(requestId, this.path(value.oldPath), this.path(value.newPath));
+    throw new Error('Unsupported SFTP control message');
+  }
+
+  private async openSFTPChannel(): Promise<void> {
+    if (!this.sftpWebSocket) throw new Error('SFTP WebSocket is not attached');
+    if (this.pendingSFTPChannelOpen?.cancelled) throw new Error('The previous SFTP channel is still closing');
+    if (this.sftpHandler) {
+      if (this.sftpHandler.isReady()) this.sftpHandler.announceReady();
+      else this.sendSFTPError('init', 'SFTP initialization is already in progress');
+      return;
+    }
+    const channelID = this.nextChannelID++;
+    const channel = new SSHChannel();
+    this.channels.set(channelID, channel);
+    this.sftpChannel = channel;
+    this.sftpHandler = new SFTPHandler(
+      channel,
+      (target, chunk) => this.sendChannelData(target, chunk),
+      (message) => this.sendSFTPJson(message),
+      (data) => this.sendSFTPBinary(data),
+    );
+    const pending: PendingSFTPChannelOpen = {
+      channelID,
+      channel,
+      cancelled: false,
+      timeout: null,
+    };
+    this.pendingSFTPChannelOpen = pending;
+    try {
+      await this.sendEncrypted(channel.buildOpenSession(channelID));
+      if (this.pendingSFTPChannelOpen === pending) {
+        pending.timeout = setTimeout(() => this.expirePendingSFTPChannelOpen(pending), SFTP_CHANNEL_OPEN_TIMEOUT_MS);
+      }
+    } catch (error) {
+      this.clearPendingSFTPChannelOpen(channel);
+      this.channels.delete(channelID);
+      this.sftpHandler.dispose();
+      this.sftpHandler = null;
+      this.sftpChannel = null;
+      throw error;
+    }
+  }
+
+  private async closeSFTPChannel(): Promise<void> {
+    const handler = this.sftpHandler;
+    if (!handler) return;
+    const channel = this.sftpChannel;
+    const pending = this.pendingSFTPChannelOpen;
+    if (pending?.channel === channel) pending.cancelled = true;
+    this.sftpHandler = null;
+    this.sftpChannel = null;
+    handler.dispose();
+    if (!channel) return;
+    if (!channel.isOpen()) return;
+    await this.sendSFTPChannelClose(channel);
+  }
+
+  private async queueSFTPTask(operation: string, requestId: string | undefined, task: () => Promise<void>): Promise<void> {
+    const run = this.sftpTaskChain.then(task);
+    const handled = run.catch((error) => {
+      this.sendSFTPError(operation, error instanceof Error ? error.message : String(error), requestId);
+    });
+    this.sftpTaskChain = handled;
+    await handled;
+  }
+
+  private expirePendingSFTPChannelOpen(expected: PendingSFTPChannelOpen): void {
+    if (this.pendingSFTPChannelOpen !== expected) return;
+    this.pendingSFTPChannelOpen = null;
+    expected.timeout = null;
+    expected.cancelled = true;
+    if (this.sftpChannel === expected.channel) {
+      this.sftpHandler?.dispose();
+      this.sftpHandler = null;
+      this.sftpChannel = null;
+    }
+    this.sendSFTPError('init', 'Timed out opening the SFTP channel');
+    if (expected.channel.isOpen()) void this.sendSFTPChannelClose(expected.channel);
+    try { this.sftpWebSocket?.close(1011, 'SFTP channel setup timed out'); } catch { /* already closed */ }
+  }
+
+  private async sendSFTPChannelClose(channel: SSHChannel): Promise<void> {
+    if (!channel.isOpen() || channel.hasSentClose()) return;
+    try {
+      await this.sendEncrypted(channel.buildEof());
+      await this.sendEncrypted(channel.buildClose());
+    } catch { /* The SSH session may already be closing. */ }
+  }
+
+  private clearPendingSFTPChannelOpen(channel?: SSHChannel): void {
+    const pending = this.pendingSFTPChannelOpen;
+    if (!pending || (channel && pending.channel !== channel)) return;
+    if (pending.timeout) clearTimeout(pending.timeout);
+    pending.timeout = null;
+    this.pendingSFTPChannelOpen = null;
+  }
+
+  private requestId(value: unknown): string;
+  private requestId(value: unknown, required: true): string;
+  private requestId(value: unknown, required: false): string | undefined;
+  private requestId(value: unknown, required = true): string | undefined {
+    if (typeof value === 'string' && /^[A-Za-z0-9._:-]{1,64}$/.test(value)) return value;
+    if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return String(value);
+    if (!required) return undefined;
+    throw new Error('Invalid SFTP request identifier');
+  }
+
+  private path(value: unknown): string {
+    if (typeof value !== 'string') throw new Error('Invalid remote path');
+    return value;
+  }
+
+  private sendSFTPJson(value: unknown): void {
+    if (this.sftpWebSocket?.readyState === WebSocket.OPEN) this.sftpWebSocket.send(JSON.stringify(value));
+  }
+
+  private sendSFTPBinary(data: Uint8Array): void {
+    if (this.sftpWebSocket?.readyState === WebSocket.OPEN) this.sftpWebSocket.send(data);
+  }
+
+  private sendSFTPError(operation: string, message: string, requestId?: string): void {
+    this.sendSFTPJson({ type: 'sftp_error', operation, message, requestId });
   }
 
   private queueInput(data: Uint8Array): void {
@@ -610,9 +945,9 @@ export class SSHSession {
     try {
       while (this.inputQueue.length > 0 && this.phase === 'ready') {
         const first = this.inputQueue[0];
-        const chunk = this.channel.takeChannelDataChunk(first, this.queueHeadOffset);
+        const chunk = this.shellChannel.takeChannelDataChunk(first, this.queueHeadOffset);
         if (!chunk) return;
-        await this.sendChannelData(chunk);
+        await this.sendChannelData(this.shellChannel, chunk);
         this.queueHeadOffset += chunk.bytesConsumed;
         this.queuedBytes -= chunk.bytesConsumed;
         if (this.queueHeadOffset === first.length) {
@@ -627,12 +962,12 @@ export class SSHSession {
 
   private async resize(cols: unknown, rows: unknown): Promise<void> {
     if (typeof cols !== 'number' || typeof rows !== 'number' || !Number.isInteger(cols) || !Number.isInteger(rows) || cols < 10 || cols > 1000 || rows < 5 || rows > 1000) throw new Error('Invalid terminal size');
-    if (this.phase === 'ready') await this.sendEncrypted(this.channel.buildWindowChange(cols, rows));
+    if (this.phase === 'ready') await this.sendEncrypted(this.shellChannel.buildWindowChange(cols, rows));
   }
 
-  private async adjustLocalWindow(): Promise<void> {
-    const amount = this.channel.takeLocalWindowAdjustment(LOCAL_WINDOW_THRESHOLD);
-    if (amount !== null) await this.sendEncrypted(this.channel.buildWindowAdjust(amount));
+  private async adjustLocalWindow(channel: SSHChannel): Promise<void> {
+    const amount = channel.takeLocalWindowAdjustment(LOCAL_WINDOW_THRESHOLD);
+    if (amount !== null) await this.sendEncrypted(channel.buildWindowAdjust(amount));
   }
 
   private async handleGlobalRequest(payload: Uint8Array): Promise<void> {
@@ -681,11 +1016,11 @@ export class SSHSession {
     });
   }
 
-  private async sendChannelData(chunk: ChannelDataChunk): Promise<void> {
+  private async sendChannelData(channel: SSHChannel, chunk: ChannelDataChunk): Promise<void> {
     await this.serialSend(async () => {
       if (!this.encryptor) throw new Error('SSH encryption is not initialized');
       const spec = getCipherSpec(this.cipherC2S);
-      const packet = await SSHPacketBuilder.buildWithPayloadWriter(chunk.payloadLength, (target, offset) => this.channel.writeChannelDataPayload(target, offset, chunk.source, chunk.sourceOffset, chunk.bytesConsumed), spec.blockSize, (data, sequence, aad) => this.encryptor!.encrypt(data, sequence, aad), this.sendSequence, spec.aead, this.signer ? (data, sequence) => this.signer!.sign(data, sequence) : undefined);
+      const packet = await SSHPacketBuilder.buildWithPayloadWriter(chunk.payloadLength, (target, offset) => channel.writeChannelDataPayload(target, offset, chunk.source, chunk.sourceOffset, chunk.bytesConsumed), spec.blockSize, (data, sequence, aad) => this.encryptor!.encrypt(data, sequence, aad), this.sendSequence, spec.aead, this.signer ? (data, sequence) => this.signer!.sign(data, sequence) : undefined);
       this.sendSequence = nextSequenceNumber(this.sendSequence);
       await this.write(packet);
     });
@@ -782,26 +1117,6 @@ export class SSHSession {
       throw new Error('Malformed SSH authentication methods');
     }
     return methods ? methods.split(',') : [];
-  }
-
-  private validateKeyboardInteractiveRequest(payload: Uint8Array): number {
-    let offset = 1;
-    offset = this.readString(payload, offset).next; // name
-    offset = this.readString(payload, offset).next; // instruction
-    offset = this.readString(payload, offset).next; // language tag
-    if (offset + 4 > payload.length) throw new Error('Malformed SSH keyboard-interactive challenge');
-    const promptCount = readUint32(payload, offset);
-    offset += 4;
-    if (promptCount !== 1) throw new Error('SSH keyboard-interactive authentication requires exactly one prompt');
-    const prompt = this.readString(payload, offset);
-    offset = prompt.next;
-    if (offset >= payload.length || payload[offset] > 1 || offset + 1 !== payload.length) {
-      throw new Error('Malformed SSH keyboard-interactive prompt');
-    }
-    if (!SSHAuth.isSupportedPasswordPrompt(prompt.value, payload[offset] === 1)) {
-      throw new Error('SSH keyboard-interactive prompt is not a supported password prompt');
-    }
-    return promptCount;
   }
 
   private isHostKeyAlgorithmCompatible(negotiated: string | null, keyType: string): boolean {
