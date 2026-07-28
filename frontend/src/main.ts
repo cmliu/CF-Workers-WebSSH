@@ -110,6 +110,8 @@ const LANGUAGE_STORAGE_KEY = 'workers-webssh.language';
 const MAX_KEY_BYTES = 65_536;
 const MAX_LEGACY_PASSWORD_BASE64_LENGTH = 16_384;
 const PING_INTERVAL_MS = 25_000;
+const CLIENT_CLOSE_SESSION_ERROR = 4000;
+const CLIENT_CLOSE_PROTOCOL_ERROR = 4002;
 
 function loadLanguage(): Language {
   try {
@@ -1249,7 +1251,7 @@ function handleServerMessage(message: ServerMessage): void {
       || (expected !== '' && !SSH_FINGERPRINT_RE.test(expected))
       || (message.expectedFingerprint !== undefined && message.expectedFingerprint !== currentExpectedFingerprint)) {
       event(bilingual('收到无效的主机密钥消息。', 'Received an invalid host key message.'), 'protocol', true);
-      socket?.close(1002, 'Invalid host key message');
+      socket?.close(CLIENT_CLOSE_PROTOCOL_ERROR, 'Invalid host key message');
       return;
     }
     ui.metricHostKey.textContent = keyType.replace('ssh-', '').replace('ecdsa-sha2-', '');
@@ -1257,7 +1259,7 @@ function handleServerMessage(message: ServerMessage): void {
     const trust = classifyHostKey(expected, fingerprint);
     if (message.trusted !== (trust === 'matched')) {
       event(bilingual('收到不一致的主机密钥信任消息。', 'Received an inconsistent trusted host key message.'), 'protocol', true);
-      socket?.close(1002, 'Invalid trusted host key message');
+      socket?.close(CLIENT_CLOSE_PROTOCOL_ERROR, 'Invalid trusted host key message');
       return;
     }
     if (trust === 'matched') {
@@ -1309,10 +1311,24 @@ function handleServerMessage(message: ServerMessage): void {
 async function handleSocketData(data: string | ArrayBuffer | Blob, activeSocket: WebSocket, generation: number): Promise<void> {
   if (socket !== activeSocket || generation !== connectGeneration) return;
   if (typeof data === 'string') {
+    let parsed: unknown;
     try {
-      handleServerMessage(JSON.parse(data) as ServerMessage);
+      parsed = JSON.parse(data);
     } catch {
       event(bilingual('已忽略无效的控制帧。', 'Ignored an invalid control frame.'), 'protocol', true);
+      return;
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      event(bilingual('已忽略无效的控制帧。', 'Ignored an invalid control frame.'), 'protocol', true);
+      return;
+    }
+    try {
+      handleServerMessage(parsed as ServerMessage);
+    } catch {
+      event(bilingual('处理服务器控制消息时发生错误。', 'Failed to process the server control message.'), 'protocol', true);
+      if (activeSocket.readyState < WebSocket.CLOSING) {
+        activeSocket.close(CLIENT_CLOSE_PROTOCOL_ERROR, 'Control message handling failed');
+      }
     }
     return;
   }
@@ -1341,7 +1357,7 @@ function failActiveConnection(activeSocket: WebSocket | null, closeReason: strin
   currentSessionSubtitle = displayReason;
   ui.sessionSubtitle.textContent = localize(displayReason);
   setState('error');
-  if (activeSocket && activeSocket.readyState < WebSocket.CLOSING) activeSocket.close(1011, closeReason);
+  if (activeSocket && activeSocket.readyState < WebSocket.CLOSING) activeSocket.close(CLIENT_CLOSE_SESSION_ERROR, closeReason);
 }
 
 async function issueTicket(signal: AbortSignal): Promise<{ ticket: string; sessionId: string }> {

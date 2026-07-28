@@ -5,6 +5,10 @@ import {
   buildKeyboardInteractiveResponse,
   buildPasswordAuthRequest,
   isSupportedPasswordPrompt,
+  parseKeyboardInteractiveChallenge,
+  passwordResponsesForChallenge,
+  type KeyboardInteractiveChallenge,
+  type PasswordPromptIdentity,
 } from './auth-password';
 
 // SSH key type constants
@@ -40,12 +44,24 @@ export class SSHAuth {
     return buildKeyboardInteractiveAuthRequest(username);
   }
 
-  static buildKeyboardInteractiveResponse(password: string, promptCount: number): Uint8Array {
-    return buildKeyboardInteractiveResponse(password, promptCount);
+  static parseKeyboardInteractiveChallenge(payload: Uint8Array): KeyboardInteractiveChallenge {
+    return parseKeyboardInteractiveChallenge(payload);
   }
 
-  static isSupportedPasswordPrompt(prompt: string, echo: boolean): boolean {
-    return isSupportedPasswordPrompt(prompt, echo);
+  static passwordResponsesForChallenge(
+    challenge: KeyboardInteractiveChallenge,
+    password: string,
+    identity: PasswordPromptIdentity,
+  ): string[] {
+    return passwordResponsesForChallenge(challenge, password, identity);
+  }
+
+  static buildKeyboardInteractiveResponse(responses: string[]): Uint8Array {
+    return buildKeyboardInteractiveResponse(responses);
+  }
+
+  static isSupportedPasswordPrompt(challenge: KeyboardInteractiveChallenge, identity: PasswordPromptIdentity): boolean {
+    return isSupportedPasswordPrompt(challenge, identity);
   }
 
   /** Build a signed public-key authentication request (RFC 4252 section 7). */

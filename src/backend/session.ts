@@ -87,6 +87,8 @@ export class SSHSession {
   private serverSigAlgs: string[] = [];
   private authRequestSent = false;
   private passwordAuthMethod: 'password' | 'keyboard-interactive' = 'password';
+  private keyboardInteractiveRounds = 0;
+  private keyboardInteractivePasswordSent = false;
   private pendingChannelRequest: 'pty' | 'shell' | null = null;
   private ignoreNextKexPacket = false;
   private inputQueue: Uint8Array[] = [];
@@ -490,8 +492,26 @@ export class SSHSession {
       if (this.config.authMethod !== 'password' || this.passwordAuthMethod !== 'keyboard-interactive' || !this.authRequestSent) {
         throw new Error('Unexpected SSH keyboard-interactive challenge');
       }
-      const promptCount = this.validateKeyboardInteractiveRequest(payload);
-      const response = SSHAuth.buildKeyboardInteractiveResponse(this.config.password!, promptCount);
+      this.keyboardInteractiveRounds++;
+      if (this.keyboardInteractiveRounds > 16) throw new Error('Too many SSH keyboard-interactive challenge rounds');
+      const challenge = SSHAuth.parseKeyboardInteractiveChallenge(payload);
+      let responses: string[];
+      if (challenge.prompts.length === 0) {
+        responses = [];
+      } else {
+        if (this.keyboardInteractivePasswordSent || this.config.password === undefined) {
+          throw new Error('SSH keyboard-interactive requested credentials more than once');
+        }
+        responses = SSHAuth.passwordResponsesForChallenge(challenge, this.config.password, {
+          username: this.config.username,
+          host: this.config.host,
+        });
+      }
+      const response = SSHAuth.buildKeyboardInteractiveResponse(responses);
+      if (responses.length > 0) {
+        this.keyboardInteractivePasswordSent = true;
+        this.config.password = undefined;
+      }
       await this.sendEncrypted(response);
       return;
     }
@@ -782,26 +802,6 @@ export class SSHSession {
       throw new Error('Malformed SSH authentication methods');
     }
     return methods ? methods.split(',') : [];
-  }
-
-  private validateKeyboardInteractiveRequest(payload: Uint8Array): number {
-    let offset = 1;
-    offset = this.readString(payload, offset).next; // name
-    offset = this.readString(payload, offset).next; // instruction
-    offset = this.readString(payload, offset).next; // language tag
-    if (offset + 4 > payload.length) throw new Error('Malformed SSH keyboard-interactive challenge');
-    const promptCount = readUint32(payload, offset);
-    offset += 4;
-    if (promptCount !== 1) throw new Error('SSH keyboard-interactive authentication requires exactly one prompt');
-    const prompt = this.readString(payload, offset);
-    offset = prompt.next;
-    if (offset >= payload.length || payload[offset] > 1 || offset + 1 !== payload.length) {
-      throw new Error('Malformed SSH keyboard-interactive prompt');
-    }
-    if (!SSHAuth.isSupportedPasswordPrompt(prompt.value, payload[offset] === 1)) {
-      throw new Error('SSH keyboard-interactive prompt is not a supported password prompt');
-    }
-    return promptCount;
   }
 
   private isHostKeyAlgorithmCompatible(negotiated: string | null, keyType: string): boolean {
