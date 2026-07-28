@@ -11,7 +11,7 @@
 
 - Cloudflare Workers 原生部署，使用 Durable Objects 隔离每个 SSH 会话。
 - 基于 xterm.js 的响应式终端，支持桌面端和移动端、自动缩放、全屏和会话日志。
-- 支持密码认证，以及 Ed25519、RSA、ECDSA 的未加密 OpenSSH 私钥认证。
+- 支持 SSH password 与单密码提示的 keyboard-interactive 认证，以及 Ed25519、RSA、ECDSA 的未加密 OpenSSH 私钥认证。
 - 首次连接时暂停认证并显示主机 SHA-256 指纹，确认后才会发送 SSH 凭据。
 - SSH 连接成功后自动写入浏览器本地"历史记录"，密码使用 AES-256-GCM 加密，私钥不保存。
 - 支持 UTF-8、GB18030、Big5 显示编码、初始命令和分享链接（密码认证时链接携带 Base64 密码，粘贴即自动连接）。
@@ -40,7 +40,7 @@ Cloudflare Worker
 | 类别 | 当前支持 |
 | --- | --- |
 | SSH 协议 | SSH 2.0 交互式 Shell、PTY、窗口尺寸同步、Keepalive |
-| 用户认证 | Password、OpenSSH Ed25519、RSA、ECDSA P-256/P-384/P-521 私钥 |
+| 用户认证 | Password、单密码提示 keyboard-interactive、OpenSSH Ed25519、RSA、ECDSA P-256/P-384/P-521 私钥 |
 | 密钥交换 | `curve25519-sha256`、`ecdh-sha2-nistp256` |
 | 主机密钥 | Ed25519、ECDSA P-256/P-384/P-521、RSA SHA-2 |
 | 加密算法 | AES-128/256-GCM、AES-128/192/256-CTR |

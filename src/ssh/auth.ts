@@ -1,5 +1,15 @@
 import { SSH_MSG_USERAUTH_REQUEST } from '../types';
 import { encodeString, concat, readUint32, toBufferSource } from './utils';
+import {
+  buildKeyboardInteractiveAuthRequest,
+  buildKeyboardInteractiveResponse,
+  buildPasswordAuthRequest,
+  isSupportedPasswordPrompt,
+  parseKeyboardInteractiveChallenge,
+  passwordResponsesForChallenge,
+  type KeyboardInteractiveChallenge,
+  type PasswordPromptIdentity,
+} from './auth-password';
 
 // SSH key type constants
 const SSH_ED25519 = 'ssh-ed25519';
@@ -27,16 +37,31 @@ export class SSHAuth {
     username: string,
     password: string
   ): Uint8Array {
-    const parts: Uint8Array[] = [
-      new Uint8Array([SSH_MSG_USERAUTH_REQUEST]),
-      encodeString(username),
-      encodeString('ssh-connection'),
-      encodeString('password'),
-      new Uint8Array([0x00]),
-      encodeString(password),
-    ];
+    return buildPasswordAuthRequest(username, password);
+  }
 
-    return concat(...parts);
+  static buildKeyboardInteractiveAuthRequest(username: string): Uint8Array {
+    return buildKeyboardInteractiveAuthRequest(username);
+  }
+
+  static parseKeyboardInteractiveChallenge(payload: Uint8Array): KeyboardInteractiveChallenge {
+    return parseKeyboardInteractiveChallenge(payload);
+  }
+
+  static passwordResponsesForChallenge(
+    challenge: KeyboardInteractiveChallenge,
+    password: string,
+    identity: PasswordPromptIdentity,
+  ): string[] {
+    return passwordResponsesForChallenge(challenge, password, identity);
+  }
+
+  static buildKeyboardInteractiveResponse(responses: string[]): Uint8Array {
+    return buildKeyboardInteractiveResponse(responses);
+  }
+
+  static isSupportedPasswordPrompt(challenge: KeyboardInteractiveChallenge, identity: PasswordPromptIdentity): boolean {
+    return isSupportedPasswordPrompt(challenge, identity);
   }
 
   /** Build a signed public-key authentication request (RFC 4252 section 7). */

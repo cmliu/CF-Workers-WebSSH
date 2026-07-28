@@ -1215,6 +1215,31 @@ button:disabled {
   text-align: center;
 }
 
+.host-key-dialog.changed {
+  border-color: color-mix(in srgb, var(--danger) 48%, var(--border));
+}
+
+.host-key-dialog.changed .dialog-icon {
+  border-color: color-mix(in srgb, var(--danger) 52%, var(--border));
+  background: var(--danger-dim);
+  color: var(--danger);
+}
+
+.host-key-dialog.changed .eyebrow,
+.host-key-dialog.changed #host-key-title {
+  color: var(--danger);
+}
+
+.host-key-dialog.changed #host-key-expected-fingerprint {
+  color: var(--danger);
+}
+
+.host-key-dialog.changed .dialog-actions .primary-button {
+  border-color: var(--danger);
+  background: var(--danger);
+  color: #fff;
+}
+
 .host-key-dialog h2 {
   margin: 0 0 7px;
   font-size: 18px;

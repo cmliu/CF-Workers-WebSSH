@@ -294,27 +294,25 @@
 
       <dialog id="host-key-dialog" class="host-key-dialog" aria-labelledby="host-key-title">
         <form method="dialog">
-          <span class="dialog-icon" aria-hidden="true" data-i18n-zh="密钥" data-i18n-en="KEY">密钥</span>
+          <span id="host-key-icon" class="dialog-icon" aria-hidden="true">密钥</span>
           <div>
-            <p class="eyebrow" data-i18n-zh="主机身份" data-i18n-en="HOST IDENTITY">主机身份</p>
-            <h2 id="host-key-title" data-i18n-zh="信任此 SSH 主机？" data-i18n-en="Trust this SSH host?">信任此 SSH 主机？</h2>
-            <p
-              data-i18n-zh="服务器提供了尚未为此目标固定的密钥。继续前，请通过可信渠道核验。"
-              data-i18n-en="The server presented a key that has not been pinned for this target. Verify it through a trusted channel before continuing."
-            >服务器提供了尚未为此目标固定的密钥。继续前，请通过可信渠道核验。</p>
+            <p id="host-key-eyebrow" class="eyebrow">主机身份</p>
+            <h2 id="host-key-title">信任此 SSH 主机？</h2>
+            <p id="host-key-description">服务器提供了尚未为此目标固定的密钥。继续前，请通过可信渠道核验。</p>
           </div>
           <dl>
             <div><dt data-i18n-zh="目标" data-i18n-en="Target">目标</dt><dd id="host-key-target">--</dd></div>
             <div><dt data-i18n-zh="密钥类型" data-i18n-en="Key type">密钥类型</dt><dd id="host-key-type">--</dd></div>
+            <div id="host-key-expected-row" hidden><dt data-i18n-zh="之前的指纹" data-i18n-en="Previous fingerprint">之前的指纹</dt><dd id="host-key-expected-fingerprint">--</dd></div>
             <div><dt data-i18n-zh="SHA-256 指纹" data-i18n-en="SHA-256 fingerprint">SHA-256 指纹</dt><dd id="host-key-fingerprint">--</dd></div>
           </dl>
           <label class="trust-check">
             <input id="remember-host-key" type="checkbox" checked />
-            <span data-i18n-zh="下次记住并验证此指纹" data-i18n-en="Remember and verify this fingerprint next time">下次记住并验证此指纹</span>
+            <span id="remember-host-key-label">下次记住并验证此指纹</span>
           </label>
           <div class="dialog-actions">
             <button id="reject-host-key" class="secondary-button" value="reject" type="submit" data-i18n-zh="取消连接" data-i18n-en="Cancel">取消连接</button>
-            <button id="accept-host-key" class="primary-button" value="accept" type="submit" data-i18n-zh="信任并继续" data-i18n-en="Trust &amp; continue">信任并继续</button>
+            <button id="accept-host-key" class="primary-button" value="accept" type="submit">信任并继续</button>
           </div>
         </form>
       </dialog>

@@ -5,6 +5,7 @@ import { historyKey, historyLabel, normalizeHistory, upsertHistoryIfNewer, type 
 import { getHistoryPasswordKey } from './history-key';
 import { decryptPasswordResult, encryptPassword, isEncryptedPassword } from './password-crypto';
 import { resolveConnectionControl, resolveConnectionPanel } from './ui-state';
+import { classifyHostKey, SSH_FINGERPRINT_RE, type HostKeyPrompt } from './host-key';
 import './style.css';
 
 type AuthMethod = 'password' | 'publickey';
@@ -62,6 +63,7 @@ interface ServerMessage {
   event?: string;
   message?: string;
   fingerprint?: string;
+  expectedFingerprint?: string;
   keyType?: string;
   trusted?: boolean;
   latency?: number;
@@ -108,6 +110,8 @@ const LANGUAGE_STORAGE_KEY = 'workers-webssh.language';
 const MAX_KEY_BYTES = 65_536;
 const MAX_LEGACY_PASSWORD_BASE64_LENGTH = 16_384;
 const PING_INTERVAL_MS = 25_000;
+const CLIENT_CLOSE_SESSION_ERROR = 4000;
+const CLIENT_CLOSE_PROTOCOL_ERROR = 4002;
 
 function loadLanguage(): Language {
   try {
@@ -287,10 +291,17 @@ const ui = {
   eventLog: element<HTMLElement>('event-log'),
   toastRegion: element<HTMLElement>('toast-region'),
   hostKeyDialog: element<HTMLDialogElement>('host-key-dialog'),
+  hostKeyIcon: element<HTMLElement>('host-key-icon'),
+  hostKeyEyebrow: element<HTMLElement>('host-key-eyebrow'),
+  hostKeyTitle: element<HTMLElement>('host-key-title'),
+  hostKeyDescription: element<HTMLElement>('host-key-description'),
   hostKeyTarget: element<HTMLElement>('host-key-target'),
   hostKeyType: element<HTMLElement>('host-key-type'),
+  hostKeyExpectedRow: element<HTMLElement>('host-key-expected-row'),
+  hostKeyExpectedFingerprint: element<HTMLElement>('host-key-expected-fingerprint'),
   hostKeyFingerprint: element<HTMLElement>('host-key-fingerprint'),
   rememberHostKey: element<HTMLInputElement>('remember-host-key'),
+  rememberHostKeyLabel: element<HTMLElement>('remember-host-key-label'),
   rejectHostKey: element<HTMLButtonElement>('reject-host-key'),
   acceptHostKey: element<HTMLButtonElement>('accept-host-key'),
 };
@@ -353,7 +364,7 @@ let sessionStartedAt = 0;
 let uptimeTimer: number | null = null;
 let pingTimer: number | null = null;
 let lastPingAt = 0;
-let pendingHostKey: { fingerprint: string; keyType: string } | null = null;
+let pendingHostKey: HostKeyPrompt | null = null;
 let currentTargetKey = '';
 let currentTargetLabel = '';
 let currentInitialCommand = '';
@@ -364,6 +375,7 @@ let awaitingHostKeyDecision = false;
 let connectGeneration = 0;
 let authorizationAbort: AbortController | null = null;
 let currentExpectedFingerprint = '';
+let currentRememberedFingerprint = '';
 let currentSessionSubtitle: LocalizedMessage = { zh: '选择目标并连接', en: 'Choose a target and connect' };
 let currentEventMessage: LocalizedMessage = { zh: 'Worker 运行时待命', en: 'Worker runtime standing by' };
 let currentFormError: LocalizedMessage | null = null;
@@ -442,7 +454,7 @@ function isStoredSavedProfile(value: unknown): value is StoredSavedProfile {
     typeof item.encoding === 'string' &&
     ['utf-8', 'gb18030', 'big5'].includes(item.encoding) &&
     typeof item.fingerprint === 'string' &&
-    (item.fingerprint === '' || /^SHA256:[A-Za-z0-9+/]{43}$/.test(item.fingerprint)) &&
+    (item.fingerprint === '' || SSH_FINGERPRINT_RE.test(item.fingerprint)) &&
     typeof item.updatedAt === 'number' &&
     Number.isFinite(item.updatedAt) &&
     item.updatedAt >= 0 &&
@@ -486,7 +498,7 @@ function isLegacySavedProfile(value: unknown): value is LegacySavedProfile {
     && typeof item.initialCommand === 'string' && item.initialCommand.length <= 4096
     && typeof item.termType === 'string' && /^[A-Za-z0-9._+-]{1,64}$/.test(item.termType)
     && typeof item.encoding === 'string' && ['utf-8', 'gb18030', 'big5'].includes(item.encoding)
-    && typeof item.fingerprint === 'string' && (item.fingerprint === '' || /^SHA256:[A-Za-z0-9+/]{43}$/.test(item.fingerprint))
+    && typeof item.fingerprint === 'string' && (item.fingerprint === '' || SSH_FINGERPRINT_RE.test(item.fingerprint))
     && typeof item.updatedAt === 'number' && Number.isFinite(item.updatedAt)
     && item.updatedAt >= 0 && item.updatedAt <= 8_640_000_000_000_000;
 }
@@ -617,7 +629,7 @@ function loadHostKeys(): Record<string, string> {
     const parsed: unknown = JSON.parse(localStorage.getItem(HOST_KEY_STORAGE_KEY) ?? '{}');
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
     return Object.fromEntries(
-      Object.entries(parsed).filter(([key, value]) => key.length <= 512 && typeof value === 'string' && /^SHA256:[A-Za-z0-9+/]{43}$/.test(value)),
+      Object.entries(parsed).filter(([key, value]) => key.length <= 512 && typeof value === 'string' && SSH_FINGERPRINT_RE.test(value)),
     );
   } catch {
     return {};
@@ -668,9 +680,52 @@ async function persistHistoryMutation(mutation: HistoryMutation): Promise<Histor
   }
 }
 
-function persistHostKeys(): void {
-  try { localStorage.setItem(HOST_KEY_STORAGE_KEY, JSON.stringify(hostKeys)); }
-  catch { toast(bilingual('此浏览器无法保存主机指纹。', 'Host fingerprints could not be saved in this browser.'), 'error'); }
+function persistHostKeys(): boolean {
+  try {
+    localStorage.setItem(HOST_KEY_STORAGE_KEY, JSON.stringify(hostKeys));
+    return true;
+  } catch {
+    toast(bilingual('此浏览器无法保存主机指纹。', 'Host fingerprints could not be saved in this browser.'), 'error');
+    return false;
+  }
+}
+
+async function replaceRememberedHostKey(target: string, fingerprint: string): Promise<void> {
+  const write = (): boolean => {
+    const snapshot = readStoredArray(PROFILE_STORAGE_KEY);
+    const stored = snapshot.values
+      .map(sanitizeSavedProfile)
+      .filter((profile): profile is SavedProfile => profile !== null);
+    const base = snapshot.present ? normalizeHistory(stored) : profiles;
+    const baseHostKeys = loadHostKeys();
+    const updated = base.map((profile) => passwordContext(profile) === target
+      ? { ...profile, fingerprint }
+      : profile);
+    try {
+      localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(updated));
+      hostKeys = { ...baseHostKeys, [target]: fingerprint };
+      if (!persistHostKeys()) throw new Error('Host key persistence failed');
+      profiles = updated;
+      return true;
+    } catch {
+      hostKeys = baseHostKeys;
+      try { localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(base)); } catch { /* Best-effort rollback. */ }
+      return false;
+    }
+  };
+  let persisted = false;
+  try {
+    persisted = 'locks' in navigator
+      ? await navigator.locks.request('workers-webssh.profiles.v2', write)
+      : write();
+  } catch {
+    persisted = false;
+  }
+  if (!persisted) toast(bilingual(
+    '当前连接已接受新指纹，但无法在此浏览器中记住。',
+    'The new fingerprint was accepted for this connection but could not be remembered in this browser.',
+  ), 'error');
+  renderProfiles();
 }
 
 function authMethod(): AuthMethod {
@@ -774,7 +829,7 @@ function validateProfileFields(): string | null {
   if (!Number.isInteger(port) || port < 1 || port > 65_535) return bilingual('端口必须介于 1 和 65535 之间。', 'Port must be between 1 and 65535.');
   if (!username || username.length > 128 || /[\r\n\0]/.test(username)) return bilingual('请输入有效的 SSH 用户名。', 'Enter a valid SSH username.');
   const fingerprint = ui.fingerprint.value.trim();
-  if (fingerprint && !/^SHA256:[A-Za-z0-9+/]{43}$/.test(fingerprint)) return bilingual('主机指纹必须使用 SHA256:base64 格式。', 'Host fingerprint must use the SHA256:base64 format.');
+  if (fingerprint && !SSH_FINGERPRINT_RE.test(fingerprint)) return bilingual('主机指纹必须使用 SHA256:base64 格式。', 'Host fingerprint must use the SHA256:base64 format.');
   return null;
 }
 
@@ -875,7 +930,9 @@ async function saveConnectedProfile(): Promise<void> {
   }
   if (passwordContext(profile) !== operation.target || latestHistoryMutation.get(operation.target) !== mutation) return;
   const key = targetKey(profile.host, profile.port, profile.username);
-  const rememberedFingerprint = profile.fingerprint || hostKeys[key] || '';
+  const rememberedFingerprint = key === currentTargetKey && currentRememberedFingerprint
+    ? currentRememberedFingerprint
+    : hostKeys[key] || profile.fingerprint || '';
   const saved: SavedProfile = {
     ...profile,
     fingerprint: rememberedFingerprint,
@@ -1127,13 +1184,44 @@ function sendHostKeyDecision(accept: boolean): void {
     fingerprint: hostKey.fingerprint,
   }));
   if (accept && ui.rememberHostKey.checked && currentTargetKey) {
-    hostKeys[currentTargetKey] = hostKey.fingerprint;
-    persistHostKeys();
+    currentRememberedFingerprint = hostKey.fingerprint;
+    void replaceRememberedHostKey(currentTargetKey, hostKey.fingerprint);
     if (targetKey() === currentTargetKey) ui.fingerprint.value = hostKey.fingerprint;
   }
   event(accept
-    ? bilingual('主机密钥已接受，可以继续认证。', 'Host key accepted; authentication may continue.')
+    ? hostKey.trust === 'changed'
+      ? bilingual('新的主机密钥已明确接受，可以继续认证。', 'The new host key was explicitly accepted; authentication may continue.')
+      : bilingual('主机密钥已接受，可以继续认证。', 'Host key accepted; authentication may continue.')
     : bilingual('主机密钥已拒绝。', 'Host key rejected.'), 'host-key', !accept);
+}
+
+function configureHostKeyDialog(hostKey: HostKeyPrompt): void {
+  const changed = hostKey.trust === 'changed';
+  ui.hostKeyDialog.classList.toggle('changed', changed);
+  ui.hostKeyIcon.textContent = changed ? bilingual('警告', 'ALERT') : bilingual('密钥', 'KEY');
+  ui.hostKeyEyebrow.textContent = changed
+    ? bilingual('主机身份已变化', 'HOST IDENTITY CHANGED')
+    : bilingual('主机身份', 'HOST IDENTITY');
+  ui.hostKeyTitle.textContent = changed
+    ? bilingual('SSH 主机密钥不匹配', 'SSH host key mismatch')
+    : bilingual('信任此 SSH 主机？', 'Trust this SSH host?');
+  ui.hostKeyDescription.textContent = changed
+    ? bilingual(
+      '服务器密钥与之前保存的指纹不同。这可能是正常换钥，也可能是中间人攻击。仅在通过可信渠道确认新指纹后继续。',
+      'The server key differs from the saved fingerprint. This can be a legitimate rotation or a man-in-the-middle attack. Continue only after verifying the new fingerprint through a trusted channel.',
+    )
+    : bilingual(
+      '服务器提供了尚未为此目标固定的密钥。继续前，请通过可信渠道核验。',
+      'The server presented a key that has not been pinned for this target. Verify it through a trusted channel before continuing.',
+    );
+  ui.hostKeyExpectedRow.hidden = !changed;
+  ui.hostKeyExpectedFingerprint.textContent = changed ? hostKey.expectedFingerprint : '--';
+  ui.rememberHostKeyLabel.textContent = changed
+    ? bilingual('替换并记住这个新指纹', 'Replace the saved fingerprint with this new one')
+    : bilingual('下次记住并验证此指纹', 'Remember and verify this fingerprint next time');
+  ui.acceptHostKey.textContent = changed
+    ? bilingual('我已核验，替换并继续', 'Verified: replace & continue')
+    : bilingual('信任并继续', 'Trust & continue');
 }
 
 function clearHostKeyPrompt(): void {
@@ -1156,30 +1244,38 @@ function handleServerMessage(message: ServerMessage): void {
   if (type === 'host_key') {
     const fingerprint = message.fingerprint ?? '';
     const keyType = message.keyType ?? '';
-    if (!/^SHA256:[A-Za-z0-9+/]{43}$/.test(fingerprint) || !/^[A-Za-z0-9@._+-]{1,128}$/.test(keyType)) {
+    const expected = message.expectedFingerprint ?? currentExpectedFingerprint;
+    if (!SSH_FINGERPRINT_RE.test(fingerprint)
+      || !/^[A-Za-z0-9@._+-]{1,128}$/.test(keyType)
+      || typeof message.trusted !== 'boolean'
+      || (expected !== '' && !SSH_FINGERPRINT_RE.test(expected))
+      || (message.expectedFingerprint !== undefined && message.expectedFingerprint !== currentExpectedFingerprint)) {
       event(bilingual('收到无效的主机密钥消息。', 'Received an invalid host key message.'), 'protocol', true);
-      socket?.close(1002, 'Invalid host key message');
+      socket?.close(CLIENT_CLOSE_PROTOCOL_ERROR, 'Invalid host key message');
       return;
     }
-    pendingHostKey = { fingerprint, keyType };
     ui.metricHostKey.textContent = keyType.replace('ssh-', '').replace('ecdsa-sha2-', '');
     ui.metricHostKey.title = fingerprint;
-    const expected = currentExpectedFingerprint;
-    if (expected && expected !== fingerprint) {
-      event(bilingual('主机密钥不匹配，连接已拒绝。', 'Host key mismatch; connection rejected.'), 'host-key', true);
-      socket?.close(1008, 'Host key mismatch');
+    const trust = classifyHostKey(expected, fingerprint);
+    if (message.trusted !== (trust === 'matched')) {
+      event(bilingual('收到不一致的主机密钥信任消息。', 'Received an inconsistent trusted host key message.'), 'protocol', true);
+      socket?.close(CLIENT_CLOSE_PROTOCOL_ERROR, 'Invalid trusted host key message');
       return;
     }
-    if (message.trusted || expected) {
+    if (trust === 'matched') {
       event(bilingual('已固定的主机密钥匹配。', 'Pinned host key matched.'), 'host-key');
       return;
     }
+    pendingHostKey = { fingerprint, keyType, expectedFingerprint: expected, trust };
     awaitingHostKeyDecision = true;
+    configureHostKeyDialog(pendingHostKey);
     ui.hostKeyTarget.textContent = ui.sessionTitle.textContent ?? currentTargetKey;
     ui.hostKeyType.textContent = keyType;
     ui.hostKeyFingerprint.textContent = fingerprint;
     ui.rememberHostKey.checked = true;
-    event(bilingual(`认证已暂停，请确认首次见到的主机密钥 ${fingerprint}`, `Authentication paused for first-seen host key ${fingerprint}`), 'host-key');
+    event(trust === 'changed'
+      ? bilingual(`认证已暂停：主机密钥从 ${expected} 变为 ${fingerprint}`, `Authentication paused: host key changed from ${expected} to ${fingerprint}`)
+      : bilingual(`认证已暂停，请确认首次见到的主机密钥 ${fingerprint}`, `Authentication paused for first-seen host key ${fingerprint}`), 'host-key', trust === 'changed');
     if (!ui.hostKeyDialog.open) {
       ui.hostKeyDialog.returnValue = '';
       ui.hostKeyDialog.showModal();
@@ -1215,10 +1311,24 @@ function handleServerMessage(message: ServerMessage): void {
 async function handleSocketData(data: string | ArrayBuffer | Blob, activeSocket: WebSocket, generation: number): Promise<void> {
   if (socket !== activeSocket || generation !== connectGeneration) return;
   if (typeof data === 'string') {
+    let parsed: unknown;
     try {
-      handleServerMessage(JSON.parse(data) as ServerMessage);
+      parsed = JSON.parse(data);
     } catch {
       event(bilingual('已忽略无效的控制帧。', 'Ignored an invalid control frame.'), 'protocol', true);
+      return;
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      event(bilingual('已忽略无效的控制帧。', 'Ignored an invalid control frame.'), 'protocol', true);
+      return;
+    }
+    try {
+      handleServerMessage(parsed as ServerMessage);
+    } catch {
+      event(bilingual('处理服务器控制消息时发生错误。', 'Failed to process the server control message.'), 'protocol', true);
+      if (activeSocket.readyState < WebSocket.CLOSING) {
+        activeSocket.close(CLIENT_CLOSE_PROTOCOL_ERROR, 'Control message handling failed');
+      }
     }
     return;
   }
@@ -1240,13 +1350,14 @@ function failActiveConnection(activeSocket: WebSocket | null, closeReason: strin
   authorizationAbort?.abort();
   authorizationAbort = null;
   currentExpectedFingerprint = '';
+  currentRememberedFingerprint = '';
   stopTimers();
   clearHostKeyPrompt();
   invalidateHistoryPasswordLoad();
   currentSessionSubtitle = displayReason;
   ui.sessionSubtitle.textContent = localize(displayReason);
   setState('error');
-  if (activeSocket && activeSocket.readyState < WebSocket.CLOSING) activeSocket.close(1011, closeReason);
+  if (activeSocket && activeSocket.readyState < WebSocket.CLOSING) activeSocket.close(CLIENT_CLOSE_SESSION_ERROR, closeReason);
 }
 
 async function issueTicket(signal: AbortSignal): Promise<{ ticket: string; sessionId: string }> {
@@ -1304,6 +1415,7 @@ async function connect(): Promise<void> {
   currentTargetLabel = targetLabel(host, port, username);
   const pinnedKey = ui.fingerprint.value.trim() || hostKeys[currentTargetKey] || '';
   currentExpectedFingerprint = pinnedKey;
+  currentRememberedFingerprint = '';
   if (pinnedKey) ui.fingerprint.value = pinnedKey;
   currentInitialCommand = ui.initialCommand.value;
   initialCommandSent = false;
@@ -1379,6 +1491,7 @@ async function connect(): Promise<void> {
       socket = null;
       pendingHistory = null;
       currentExpectedFingerprint = '';
+      currentRememberedFingerprint = '';
       stopTimers();
       clearHostKeyPrompt();
       invalidateHistoryPasswordLoad();
@@ -1425,6 +1538,7 @@ function disconnect(reason = bilingual('已由用户断开连接', 'Disconnected
   clearHostKeyPrompt();
   invalidateHistoryPasswordLoad();
   currentExpectedFingerprint = '';
+  currentRememberedFingerprint = '';
   currentSessionSubtitle = messageTranslation(reason);
   ui.sessionSubtitle.textContent = reason;
   event(reason, 'disconnect');
