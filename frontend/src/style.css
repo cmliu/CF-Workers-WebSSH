@@ -1049,10 +1049,10 @@ button:disabled {
 
 .session-metrics span {
   margin-bottom: 2px;
-  color: #5e707d;
-  font-size: 7px;
+  color: #81939e;
+  font-size: 8px;
   font-weight: 700;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.04em;
 }
 
 .session-metrics strong {
@@ -1233,6 +1233,8 @@ button:disabled {
 }
 
 #event-message {
+  min-width: 0;
+  flex: 1 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1270,7 +1272,8 @@ button:disabled {
   background: transparent;
   color: var(--muted);
   font-family: inherit;
-  font-size: inherit;
+  font-size: 10px;
+  font-weight: 650;
 }
 
 .dock-tab-icon {
@@ -2154,7 +2157,19 @@ button:disabled {
 
   .dock-tab {
     min-width: 0;
-    padding: 0 13px;
+    gap: 4px;
+    padding: 0 7px;
+    font-size: 10px;
+  }
+
+  .dock-tab .button-label {
+    display: inline;
+    white-space: nowrap;
+  }
+
+  .dock-tab-icon {
+    width: 13px;
+    height: 13px;
   }
 }
 
