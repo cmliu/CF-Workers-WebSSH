@@ -7,6 +7,7 @@ import { decryptPasswordResult, encryptPassword, isEncryptedPassword } from './p
 import { resolveConnectionControl, resolveConnectionPanel } from './ui-state';
 import { classifyHostKey, SSH_FINGERPRINT_RE, type HostKeyPrompt } from './host-key';
 import { FileManager, collectFileManagerElements } from './file-manager';
+import { resetTerminalForConnection } from './terminal-session';
 import './style.css';
 
 type AuthMethod = 'password' | 'publickey';
@@ -1467,7 +1468,7 @@ async function connect(): Promise<void> {
   authorizationAbort = abortController;
   setState('connecting');
   ui.terminalEmpty.hidden = true;
-  terminal.clear();
+  resetTerminalForConnection(terminal);
   fitTerminal(false);
 
   const host = normalizeHost(ui.host.value);
