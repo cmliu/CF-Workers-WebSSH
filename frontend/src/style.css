@@ -147,8 +147,7 @@ button:disabled {
 .event-bar,
 .file-picker,
 .profile-main,
-.profile-meta,
-.status-pill {
+.profile-meta {
   display: flex;
   align-items: center;
 }
@@ -289,69 +288,72 @@ button:disabled {
   stroke: none;
 }
 
-.status-pill {
-  gap: 7px;
-  min-width: 92px;
-  justify-content: center;
-  padding: 7px 11px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--surface);
-  color: var(--muted);
-  font-family: var(--mono);
-  font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
-}
-
-.status-dot,
 .live-orb {
+  position: relative;
   display: block;
-  width: 7px;
-  height: 7px;
+  width: 9px;
+  height: 9px;
   flex: 0 0 auto;
+  margin: 0 2px;
   border-radius: 50%;
   background: var(--muted-2);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--muted-2) 14%, transparent);
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--muted-2) 16%, transparent),
+    inset 0 1px 1px rgba(255, 255, 255, 0.25);
+  transition: background 180ms ease, box-shadow 180ms ease, transform 180ms ease;
 }
 
-.status-pill[data-state='connecting'] .status-dot,
+.live-orb::after {
+  position: absolute;
+  inset: -5px;
+  border: 1px solid transparent;
+  border-radius: inherit;
+  content: '';
+  pointer-events: none;
+}
+
 .live-orb.connecting {
   background: var(--warning);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--warning) 14%, transparent);
-  animation: pulse 1.25s ease-in-out infinite;
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--warning) 18%, transparent),
+    0 0 12px color-mix(in srgb, var(--warning) 42%, transparent);
 }
 
-.status-pill[data-state='disconnecting'] {
-  color: var(--danger);
+.live-orb.connecting::after {
+  border-color: color-mix(in srgb, var(--warning) 50%, transparent);
+  animation: live-orb-ring 1.35s ease-out infinite;
 }
 
-.status-pill[data-state='disconnecting'] .status-dot,
 .live-orb.disconnecting {
   background: var(--danger);
-  box-shadow: 0 0 0 3px var(--danger-dim);
-  animation: pulse 1.25s ease-in-out infinite;
+  box-shadow:
+    0 0 0 3px var(--danger-dim),
+    0 0 10px color-mix(in srgb, var(--danger) 35%, transparent);
+  animation: live-orb-pulse 1.1s ease-in-out infinite;
 }
 
-.status-pill[data-state='connected'] {
-  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
-  color: var(--accent);
-}
-
-.status-pill[data-state='connected'] .status-dot,
 .live-orb.connected {
   background: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-dim), 0 0 12px color-mix(in srgb, var(--accent) 50%, transparent);
+  box-shadow:
+    0 0 0 3px var(--accent-dim),
+    0 0 14px color-mix(in srgb, var(--accent) 55%, transparent),
+    inset 0 1px 1px rgba(255, 255, 255, 0.35);
 }
 
-.status-pill[data-state='error'] {
-  color: var(--danger);
-}
-
-.status-pill[data-state='error'] .status-dot,
 .live-orb.error {
   background: var(--danger);
-  box-shadow: 0 0 0 3px var(--danger-dim);
+  box-shadow:
+    0 0 0 3px var(--danger-dim),
+    0 0 12px color-mix(in srgb, var(--danger) 45%, transparent);
+}
+
+@keyframes live-orb-ring {
+  0% { opacity: 0.9; transform: scale(0.55); }
+  75%, 100% { opacity: 0; transform: scale(1.35); }
+}
+
+@keyframes live-orb-pulse {
+  50% { transform: scale(0.72); opacity: 0.7; }
 }
 
 .app-shell {
@@ -1141,7 +1143,11 @@ button:disabled {
 
 .dock-tab {
   position: relative;
+  display: inline-flex;
   min-width: 92px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   padding: 0 13px;
   border: 0;
   border-left: 1px solid var(--border);
@@ -1149,6 +1155,17 @@ button:disabled {
   color: var(--muted);
   font-family: inherit;
   font-size: inherit;
+}
+
+.dock-tab-icon {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
 }
 
 .dock-tab:hover {
@@ -1665,10 +1682,6 @@ button:disabled {
   display: none;
 }
 
-@keyframes pulse {
-  50% { opacity: 0.45; }
-}
-
 @keyframes toast-in {
   from { opacity: 0; transform: translateY(8px); }
 }
@@ -1807,15 +1820,6 @@ button:disabled {
 
 @media (max-width: 480px) {
   .brand > span:last-child {
-    display: none;
-  }
-
-  .status-pill {
-    min-width: 0;
-    padding: 7px 9px;
-  }
-
-  #global-status-label {
     display: none;
   }
 

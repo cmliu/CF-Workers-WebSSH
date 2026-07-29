@@ -272,13 +272,12 @@ const ui = {
   formError: element<HTMLElement>('form-error'),
   connect: element<HTMLButtonElement>('connect-button'),
   shareLink: element<HTMLButtonElement>('share-link'),
-  globalStatus: element<HTMLElement>('global-status'),
-  globalStatusLabel: element<HTMLElement>('global-status-label'),
   languageToggle: element<HTMLButtonElement>('language-toggle'),
   themeToggle: element<HTMLButtonElement>('theme-toggle'),
   sessionTitle: element<HTMLElement>('session-title'),
   sessionSubtitle: element<HTMLElement>('session-subtitle'),
   liveOrb: element<HTMLElement>('live-orb'),
+  liveOrbLabel: element<HTMLElement>('live-orb-label'),
   metricRtt: element<HTMLElement>('metric-rtt'),
   metricUptime: element<HTMLElement>('metric-uptime'),
   metricHostKey: element<HTMLElement>('metric-host-key'),
@@ -1049,8 +1048,7 @@ function toast(message: string, kind: 'info' | 'error' = 'info'): void {
 
 function setState(state: ConnectionState, label?: string): void {
   connectionState = state;
-  ui.globalStatus.dataset.state = state;
-  ui.globalStatusLabel.textContent = label ?? ({
+  const stateLabel = label ?? ({
     idle: bilingual('离线', 'Offline'),
     connecting: bilingual('连接中', 'Connecting'),
     connected: bilingual('在线', 'Online'),
@@ -1058,6 +1056,8 @@ function setState(state: ConnectionState, label?: string): void {
     error: bilingual('错误', 'Error'),
   } satisfies Record<ConnectionState, string>)[state];
   ui.liveOrb.className = `live-orb ${state}`;
+  ui.liveOrbLabel.textContent = stateLabel;
+  ui.liveOrb.title = stateLabel;
   const control = resolveConnectionControl(state, historyPasswordLoading);
   const controlLabel = control.action === 'cancel'
     ? bilingual('取消连接', 'Cancel connection')
@@ -1489,7 +1489,7 @@ async function connect(): Promise<void> {
   ui.sessionSubtitle.textContent = localize(currentSessionSubtitle);
   ui.metricRtt.textContent = '--';
   ui.metricHostKey.textContent = '--';
-  event(bilingual(`正在连接 ${username}@${host}:${port}`, `Starting ${username}@${host}:${port}`), 'connect');
+  event(bilingual(`正在连接 ${currentTargetLabel}`, `Starting ${currentTargetLabel}`), 'connect');
 
   try {
     const password = ui.password.value;
