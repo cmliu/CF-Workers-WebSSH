@@ -277,6 +277,7 @@ const ui = {
   sessionTitle: element<HTMLElement>('session-title'),
   sessionSubtitle: element<HTMLElement>('session-subtitle'),
   liveOrb: element<HTMLElement>('live-orb'),
+  liveOrbLabel: element<HTMLElement>('live-orb-label'),
   metricRtt: element<HTMLElement>('metric-rtt'),
   metricUptime: element<HTMLElement>('metric-uptime'),
   metricHostKey: element<HTMLElement>('metric-host-key'),
@@ -1055,7 +1056,7 @@ function setState(state: ConnectionState, label?: string): void {
     error: bilingual('错误', 'Error'),
   } satisfies Record<ConnectionState, string>)[state];
   ui.liveOrb.className = `live-orb ${state}`;
-  ui.liveOrb.setAttribute('aria-label', stateLabel);
+  ui.liveOrbLabel.textContent = stateLabel;
   ui.liveOrb.title = stateLabel;
   const control = resolveConnectionControl(state, historyPasswordLoading);
   const controlLabel = control.action === 'cancel'
