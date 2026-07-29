@@ -7,6 +7,7 @@ import { decryptPasswordResult, encryptPassword, isEncryptedPassword } from './p
 import { resolveConnectionControl, resolveConnectionPanel } from './ui-state';
 import { classifyHostKey, SSH_FINGERPRINT_RE, type HostKeyPrompt } from './host-key';
 import { FileManager, collectFileManagerElements } from './file-manager';
+import { resetTerminalForConnection } from './terminal-session';
 import './style.css';
 
 type AuthMethod = 'password' | 'publickey';
@@ -312,7 +313,7 @@ const ui = {
 
 function updateRevealPasswordButton(): void {
   const revealed = ui.password.type === 'text';
-  ui.revealPassword.textContent = revealed ? bilingual('隐藏', 'Hide') : bilingual('显示', 'Show');
+  ui.revealPassword.setAttribute('aria-pressed', revealed ? 'true' : 'false');
   ui.revealPassword.setAttribute('aria-label', revealed
     ? bilingual('隐藏密码', 'Hide password')
     : bilingual('显示密码', 'Show password'));
@@ -1467,7 +1468,7 @@ async function connect(): Promise<void> {
   authorizationAbort = abortController;
   setState('connecting');
   ui.terminalEmpty.hidden = true;
-  terminal.clear();
+  resetTerminalForConnection(terminal);
   fitTerminal(false);
 
   const host = normalizeHost(ui.host.value);

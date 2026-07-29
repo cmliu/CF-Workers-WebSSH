@@ -715,7 +715,7 @@ button:disabled {
 }
 
 .input-action-wrap input {
-  padding-right: 82px;
+  padding-right: 44px;
 }
 
 .input-action {
@@ -723,6 +723,9 @@ button:disabled {
   top: 5px;
   right: 5px;
   bottom: 5px;
+  display: grid;
+  width: 34px;
+  place-items: center;
   border: 0;
   border-radius: 5px;
   background: var(--surface-2);
@@ -730,6 +733,32 @@ button:disabled {
   font-size: 8px;
   font-weight: 800;
   text-transform: uppercase;
+}
+
+.input-action:hover {
+  color: var(--text);
+}
+
+.reveal-icon {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.reveal-icon-eye-off {
+  display: none;
+}
+
+.input-action[aria-pressed='true'] .reveal-icon-eye {
+  display: none;
+}
+
+.input-action[aria-pressed='true'] .reveal-icon-eye-off {
+  display: block;
 }
 
 .key-field {
@@ -1014,6 +1043,10 @@ button:disabled {
 }
 
 .terminal-actions .toolbar-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
   padding: 5px 7px;
   border-color: #263642;
   background: #151f28;
@@ -1166,6 +1199,17 @@ button:disabled {
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-width: 1.7;
+}
+
+.toolbar-button-icon {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
 }
 
 .dock-tab:hover {
@@ -1816,6 +1860,15 @@ button:disabled {
   .file-table th:nth-child(2) { width: 16%; }
   .file-table th:nth-child(3) { width: 16%; }
   .file-table th:nth-child(4) { width: 28%; }
+
+  .button-label {
+    display: none;
+  }
+
+  .dock-tab {
+    min-width: 0;
+    padding: 0 13px;
+  }
 }
 
 @media (max-width: 480px) {
