@@ -33,7 +33,7 @@ interface ProcessEntry {
   command: string;
 }
 
-type ProcessSortKey = 'pid' | 'user' | 'memoryBytes' | 'memoryPercent' | 'cpuPercent' | 'state' | 'time';
+type ProcessSortKey = 'pid' | 'user' | 'memoryBytes' | 'memoryPercent' | 'cpuPercent' | 'state' | 'time' | 'command';
 type SortDirection = 'ascending' | 'descending';
 
 interface ProcessSnapshot {
@@ -202,7 +202,7 @@ export class ProcessManager {
       this.sortDirection = this.sortDirection === 'ascending' ? 'descending' : 'ascending';
     } else {
       this.sortKey = key;
-      this.sortDirection = key === 'user' || key === 'state' ? 'ascending' : 'descending';
+      this.sortDirection = key === 'user' || key === 'state' || key === 'command' ? 'ascending' : 'descending';
     }
     this.updateSortHeaders();
     this.render();
