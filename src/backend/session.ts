@@ -47,6 +47,7 @@ import { SFTPHandler } from './sftp-handler';
 import { classifyHostKey } from '../ssh/host-key';
 import { encodeString, readUint32, toBufferSource } from '../ssh/utils';
 import { parseTopSnapshot } from './top-parser';
+import { retainTrailingMarkerPrefix } from './process-framing';
 
 type Cipher = SSHAESGCMCipher | SSHAESCTRCipher;
 type Phase = 'version' | 'kex' | 'host-confirm' | 'auth' | 'pty' | 'shell' | 'ready' | 'closed';
@@ -851,14 +852,16 @@ export class SSHSession {
     this.processBuffer += this.processDecoder.decode(data, { stream: true });
     if (this.processBuffer.length > PROCESS_MAX_BUFFER_BYTES) {
       const marker = this.processBuffer.lastIndexOf(PROCESS_SNAPSHOT_MARKER);
-      this.processBuffer = marker >= 0 ? this.processBuffer.slice(marker) : '';
+      this.processBuffer = marker >= 0
+        ? this.processBuffer.slice(marker)
+        : retainTrailingMarkerPrefix(this.processBuffer, PROCESS_SNAPSHOT_MARKER);
       this.sendProcessError('Process snapshot exceeded the buffer limit');
       return;
     }
     while (true) {
       const first = this.processBuffer.indexOf(PROCESS_SNAPSHOT_MARKER);
       if (first < 0) {
-        if (this.processBuffer.length > PROCESS_SNAPSHOT_MARKER.length) this.processBuffer = '';
+        this.processBuffer = retainTrailingMarkerPrefix(this.processBuffer, PROCESS_SNAPSHOT_MARKER);
         return;
       }
       if (first > 0) this.processBuffer = this.processBuffer.slice(first);
