@@ -714,7 +714,7 @@ export class SSHSession {
   }
 
   setSFTPAttachUrl(url: string): void {
-    if (!/^\/api\/ssh\/sftp\?/.test(url)) throw new Error('Invalid SFTP attach URL');
+    if (!/^\/api\/sftp\?/.test(url)) throw new Error('Invalid SFTP attach URL');
     this.sftpAttachUrl = url;
   }
 
