@@ -1513,8 +1513,8 @@ button:disabled {
 
 .toast-region {
   position: fixed;
+  top: calc(var(--topbar-height) + 12px);
   right: max(18px, env(safe-area-inset-right));
-  bottom: max(18px, env(safe-area-inset-bottom));
   z-index: 80;
   display: grid;
   width: min(340px, calc(100vw - 36px));
@@ -1683,7 +1683,7 @@ button:disabled {
 }
 
 @keyframes toast-in {
-  from { opacity: 0; transform: translateY(8px); }
+  from { opacity: 0; transform: translateY(-8px); }
 }
 
 @keyframes file-spin {
