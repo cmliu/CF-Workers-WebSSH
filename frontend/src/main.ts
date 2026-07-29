@@ -6,6 +6,7 @@ import { getHistoryPasswordKey } from './history-key';
 import { decryptPasswordResult, encryptPassword, isEncryptedPassword } from './password-crypto';
 import { resolveConnectionControl, resolveConnectionPanel } from './ui-state';
 import { classifyHostKey, SSH_FINGERPRINT_RE, type HostKeyPrompt } from './host-key';
+import { FileManager, collectFileManagerElements } from './file-manager';
 import './style.css';
 
 type AuthMethod = 'password' | 'publickey';
@@ -70,6 +71,7 @@ interface ServerMessage {
   colo?: string;
   ts?: number;
   algorithms?: Record<string, string>;
+  url?: string;
 }
 
 interface WSSHOptions {
@@ -183,6 +185,7 @@ const EVENT_LABELS: Record<string, Translation> = {
   error: ['错误', 'error'],
   debug: ['调试', 'debug'],
   'host-key': ['主机密钥', 'host key'],
+  sftp: ['文件管理', 'files'],
 };
 
 const SERVER_EVENT_MESSAGES: Record<string, Translation> = {
@@ -287,6 +290,8 @@ const ui = {
   clearTerminal: element<HTMLButtonElement>('clear-terminal'),
   fullscreenTerminal: element<HTMLButtonElement>('fullscreen-terminal'),
   eventMessage: element<HTMLElement>('event-message'),
+  fileManagerTab: element<HTMLButtonElement>('file-manager-tab'),
+  fileManagerPanel: element<HTMLElement>('file-manager-panel'),
   eventToggle: element<HTMLButtonElement>('event-toggle'),
   eventLog: element<HTMLElement>('event-log'),
   toastRegion: element<HTMLElement>('toast-region'),
@@ -328,6 +333,9 @@ function applyLanguage(language: Language, persist = false): void {
   for (const node of document.querySelectorAll<HTMLElement>('[data-i18n-aria-label-zh][data-i18n-aria-label-en]')) {
     node.setAttribute('aria-label', language === 'zh-CN' ? node.dataset.i18nAriaLabelZh! : node.dataset.i18nAriaLabelEn!);
   }
+  for (const node of document.querySelectorAll<HTMLElement>('[data-i18n-title-zh][data-i18n-title-en]')) {
+    node.setAttribute('title', language === 'zh-CN' ? node.dataset.i18nTitleZh! : node.dataset.i18nTitleEn!);
+  }
   for (const node of document.querySelectorAll<HTMLElement>('[data-i18n-content-zh][data-i18n-content-en]')) {
     node.setAttribute('content', language === 'zh-CN' ? node.dataset.i18nContentZh! : node.dataset.i18nContentEn!);
   }
@@ -350,6 +358,7 @@ function applyLanguage(language: Language, persist = false): void {
       copy.textContent = bilingual(copy.dataset.messageZh, copy.dataset.messageEn);
     }
   }
+  if (fileManager) fileManager.setLanguage();
 
   if (persist) {
     try { localStorage.setItem(LANGUAGE_STORAGE_KEY, language); } catch { /* Language still applies for this page. */ }
@@ -388,6 +397,7 @@ let keyFileReadGeneration = 0;
 const latestHistoryMutation = new Map<string, number>();
 const panelMedia = window.matchMedia('(max-width: 760px)');
 let panelOpen = !panelMedia.matches;
+let fileManager: FileManager;
 
 const terminal = new Terminal({
   allowProposedApi: false,
@@ -406,6 +416,11 @@ const fitAddon = new FitAddon();
 terminal.loadAddon(fitAddon);
 terminal.loadAddon(new WebLinksAddon());
 terminal.open(ui.terminalElement);
+fileManager = new FileManager({
+  elements: collectFileManagerElements(),
+  getLanguage: () => currentLanguage,
+  onError: (message) => event(message, 'sftp', true),
+});
 
 function terminalTheme(): Record<string, string> {
   return {
@@ -1195,6 +1210,38 @@ function sendHostKeyDecision(accept: boolean): void {
     : bilingual('主机密钥已拒绝。', 'Host key rejected.'), 'host-key', !accept);
 }
 
+type WorkspaceTab = 'files' | 'log';
+let activeWorkspaceTab: WorkspaceTab | null = null;
+
+function setWorkspaceTab(tab: WorkspaceTab | null, focus = false, rovingTab = tab ?? activeWorkspaceTab ?? 'files'): void {
+  const filesActive = tab === 'files';
+  const logActive = tab === 'log';
+  activeWorkspaceTab = tab;
+  ui.terminalCard.classList.toggle('workspace-panel-open', tab !== null);
+  ui.fileManagerPanel.hidden = !filesActive;
+  ui.eventLog.hidden = !logActive;
+  ui.fileManagerTab.setAttribute('aria-selected', String(filesActive));
+  ui.eventToggle.setAttribute('aria-selected', String(logActive));
+  ui.fileManagerTab.setAttribute('aria-expanded', String(filesActive));
+  ui.eventToggle.setAttribute('aria-expanded', String(logActive));
+  ui.fileManagerTab.tabIndex = rovingTab === 'files' ? 0 : -1;
+  ui.eventToggle.tabIndex = rovingTab === 'log' ? 0 : -1;
+  if (logActive) requestAnimationFrame(() => { ui.eventLog.scrollTop = ui.eventLog.scrollHeight; });
+  if (focus) (rovingTab === 'files' ? ui.fileManagerTab : ui.eventToggle).focus();
+  requestAnimationFrame(() => fitTerminal(true));
+}
+
+function toggleWorkspaceTab(tab: WorkspaceTab): void {
+  setWorkspaceTab(activeWorkspaceTab === tab ? null : tab, false, tab);
+}
+
+function handleWorkspaceTabKey(event: KeyboardEvent): void {
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+  event.preventDefault();
+  const files = event.key === 'Home' || (event.key !== 'End' && event.currentTarget === ui.eventToggle);
+  setWorkspaceTab(files ? 'files' : 'log', true);
+}
+
 function configureHostKeyDialog(hostKey: HostKeyPrompt): void {
   const changed = hostKey.trust === 'changed';
   ui.hostKeyDialog.classList.toggle('changed', changed);
@@ -1233,6 +1280,20 @@ function clearHostKeyPrompt(): void {
 
 function handleServerMessage(message: ServerMessage): void {
   const type = message.type ?? 'status';
+  if (type === 'sftp_attach') {
+    if (typeof message.url !== 'string' || !message.url.startsWith('/api/sftp?')) {
+      event(bilingual('收到无效的文件管理连接信息。', 'Received invalid file-management connection details.'), 'protocol', true);
+      return;
+    }
+    try {
+      fileManager.attach(message.url);
+    } catch {
+      event(bilingual('无法打开文件管理连接。', 'Could not open the file-management connection.'), 'sftp', true);
+      return;
+    }
+    event(bilingual('文件管理通道已可用。', 'File management channel is available.'), 'sftp');
+    return;
+  }
   if (type === 'pong') {
     if (lastPingAt > 0) ui.metricRtt.textContent = `${Math.max(1, Math.round(performance.now() - lastPingAt))} ms`;
     return;
@@ -1352,6 +1413,7 @@ function failActiveConnection(activeSocket: WebSocket | null, closeReason: strin
   currentExpectedFingerprint = '';
   currentRememberedFingerprint = '';
   stopTimers();
+  fileManager.reset();
   clearHostKeyPrompt();
   invalidateHistoryPasswordLoad();
   currentSessionSubtitle = displayReason;
@@ -1493,6 +1555,7 @@ async function connect(): Promise<void> {
       currentExpectedFingerprint = '';
       currentRememberedFingerprint = '';
       stopTimers();
+      fileManager.reset();
       clearHostKeyPrompt();
       invalidateHistoryPasswordLoad();
       const wasActive = connectionState === 'connected';
@@ -1535,6 +1598,7 @@ function disconnect(reason = bilingual('已由用户断开连接', 'Disconnected
   const activeSocket = socket;
   socket = null;
   stopTimers();
+  fileManager.reset();
   clearHostKeyPrompt();
   invalidateHistoryPasswordLoad();
   currentExpectedFingerprint = '';
@@ -1792,11 +1856,10 @@ ui.fullscreenTerminal.addEventListener('click', async () => {
   else await ui.terminalCard.requestFullscreen();
 });
 document.addEventListener('fullscreenchange', () => fitTerminal(true));
-ui.eventToggle.addEventListener('click', () => {
-  ui.eventLog.hidden = !ui.eventLog.hidden;
-  ui.eventToggle.setAttribute('aria-expanded', String(!ui.eventLog.hidden));
-  fitTerminal(true);
-});
+ui.fileManagerTab.addEventListener('click', () => toggleWorkspaceTab('files'));
+ui.eventToggle.addEventListener('click', () => toggleWorkspaceTab('log'));
+ui.fileManagerTab.addEventListener('keydown', handleWorkspaceTabKey);
+ui.eventToggle.addEventListener('keydown', handleWorkspaceTabKey);
 ui.languageToggle.addEventListener('click', () => {
   applyLanguage(currentLanguage === 'zh-CN' ? 'en' : 'zh-CN', true);
   renderProfiles();
@@ -1818,7 +1881,10 @@ ui.hostKeyDialog.addEventListener('close', () => {
 });
 terminal.onData(sendTerminalData);
 new ResizeObserver(() => fitTerminal(true)).observe(ui.terminalStage);
-window.addEventListener('beforeunload', () => socket?.close(1000, 'Page closed'));
+window.addEventListener('beforeunload', () => {
+  fileManager.reset();
+  socket?.close(1000, 'Page closed');
+});
 document.addEventListener('keydown', (keyEvent) => {
   if (keyEvent.key === 'Escape' && panelMedia.matches && panelOpen && !ui.hostKeyDialog.open) {
     setPanelOpen(false);
@@ -1838,6 +1904,7 @@ async function initialize(): Promise<void> {
   setPanelOpen(panelOpen);
   setAuthMethod('password');
   setState('idle');
+  setWorkspaceTab(null);
   ui.sessionTitle.textContent = bilingual('无活动会话', 'No active session');
   ui.sessionSubtitle.textContent = bilingual('选择目标并连接', 'Choose a target and connect');
   ui.eventMessage.textContent = bilingual('Worker 运行时待命', 'Worker runtime standing by');
@@ -1858,5 +1925,6 @@ void initialize().catch(() => {
   setPanelOpen(panelOpen);
   setAuthMethod('password');
   setState('idle');
+  setWorkspaceTab(null);
   initializeCompatibilityAPI();
 });

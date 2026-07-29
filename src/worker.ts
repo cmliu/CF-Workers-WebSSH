@@ -9,6 +9,11 @@ function clientAddress(request: Request): string {
   return /^[0-9A-Fa-f:.]{2,64}$/.test(value) ? value.toLowerCase() : 'unknown';
 }
 
+function hasValidWebSocketOrigin(request: Request): boolean {
+  const origin = request.headers.get('Origin');
+  return origin === null || origin === new URL(request.url).origin;
+}
+
 async function sessionTicket(request: Request, env: Env): Promise<Response> {
   if (!request.headers.get('Content-Type')?.toLowerCase().startsWith('application/json')) return jsonError('Expected application/json', 415);
   const contentLength = Number(request.headers.get('Content-Length') ?? 0);
@@ -36,6 +41,7 @@ async function sessionTicket(request: Request, env: Env): Promise<Response> {
 async function sshUpgrade(request: Request, env: Env): Promise<Response> {
   if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') return jsonError('WebSocket upgrade required', 426);
   const url = new URL(request.url);
+  if (!hasValidWebSocketOrigin(request)) return jsonError('WebSocket origin is not allowed', 403);
   const ticket = url.searchParams.get('ticket');
   const sessionId = url.searchParams.get('session');
   if (!ticket || !sessionId) return jsonError('Missing session ticket', 401);
@@ -44,10 +50,40 @@ async function sshUpgrade(request: Request, env: Env): Promise<Response> {
   const headers = new Headers(request.headers);
   headers.delete('Cookie');
   headers.delete('Authorization');
+  const sftpAttachToken = crypto.randomUUID();
+  const sftpAttachUrl = new URL('/api/sftp', 'https://session.invalid');
+  sftpAttachUrl.searchParams.set('session', id.toString());
+  sftpAttachUrl.searchParams.set('token', sftpAttachToken);
   headers.set('x-session-ticket', ticket);
   headers.set('x-client-ip', clientAddress(request));
+  headers.set('x-sftp-attach-token', sftpAttachToken);
+  headers.set('x-sftp-attach-url', `${sftpAttachUrl.pathname}${sftpAttachUrl.search}`);
   const response = await env.SSH_SESSIONS.get(id).fetch(new Request('https://session.internal/connect', { headers }));
   if (response.status === 401) return jsonError('Invalid, expired, or already used session ticket', 401);
+  return response;
+}
+
+async function sftpUpgrade(request: Request, env: Env): Promise<Response> {
+  if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') return jsonError('WebSocket upgrade required', 426);
+  if (!hasValidWebSocketOrigin(request)) return jsonError('WebSocket origin is not allowed', 403);
+  const url = new URL(request.url);
+  const sessionId = url.searchParams.get('session');
+  const token = url.searchParams.get('token');
+  if (!sessionId || !token) return jsonError('Missing SFTP attachment authorization', 401);
+  let id: DurableObjectId;
+  try { id = env.SSH_SESSIONS.idFromString(sessionId); } catch { return jsonError('Invalid session identifier', 401); }
+  const headers = new Headers(request.headers);
+  headers.delete('Cookie');
+  headers.delete('Authorization');
+  headers.delete('x-session-ticket');
+  headers.delete('x-client-ip');
+  headers.delete('x-sftp-attach-url');
+  headers.set('x-sftp-attach-token', token);
+  const response = await env.SSH_SESSIONS.get(id).fetch(new Request('https://session.internal/sftp', {
+    method: 'GET',
+    headers,
+  }));
+  if (response.status === 401) return jsonError('Invalid, expired, or already used SFTP attachment token', 401);
   return response;
 }
 
@@ -76,6 +112,10 @@ export default {
         // 成功时 sshUpgrade 返回 101 WebSocket 升级响应，corsResponse 内部会原样
         // 放行（不重新包装）；失败时返回 JSON 错误，正常附加 CORS 头。
         return corsResponse(await sshUpgrade(request, env));
+      }
+      if (url.pathname === '/api/sftp') {
+        if (request.method !== 'GET') return corsResponse(jsonError('Method not allowed', 405));
+        return corsResponse(await sftpUpgrade(request, env));
       }
       if (isApiRequest) return corsResponse(jsonError('Not found', 404));
       if (!env.ASSETS) return jsonError('Static assets binding is not configured', 503);

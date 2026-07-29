@@ -11,6 +11,7 @@
 
 - Cloudflare Workers 原生部署，使用 Durable Objects 隔离每个 SSH 会话。
 - 基于 xterm.js 的响应式终端，支持桌面端和移动端、自动缩放、全屏和会话日志。
+- 内置 SFTP 文件管理，可浏览目录、上传/下载文件、新建与删除空目录、删除文件和重命名。
 - 支持 SSH password 与单密码提示的 keyboard-interactive 认证，以及 Ed25519、RSA、ECDSA 的未加密 OpenSSH 私钥认证。
 - 首次连接时暂停认证并显示主机 SHA-256 指纹，确认后才会发送 SSH 凭据。
 - SSH 连接成功后自动写入浏览器本地"历史记录"，密码使用 AES-256-GCM 加密，私钥不保存。
@@ -23,7 +24,7 @@
 ```text
 浏览器（xterm.js）
     │  HTTPS：申请一次性会话票据
-    │  WSS：终端输入、输出和控制消息
+    │  WSS：终端输入、输出和控制消息；独立 SFTP 文件通道
     ▼
 Cloudflare Worker
     │  同源检查、会话票据、静态资源
@@ -39,7 +40,7 @@ Cloudflare Worker
 
 | 类别 | 当前支持 |
 | --- | --- |
-| SSH 协议 | SSH 2.0 交互式 Shell、PTY、窗口尺寸同步、Keepalive |
+| SSH 协议 | SSH 2.0 交互式 Shell、PTY、SFTP v3、窗口尺寸同步、Keepalive |
 | 用户认证 | Password、单密码提示 keyboard-interactive、OpenSSH Ed25519、RSA、ECDSA P-256/P-384/P-521 私钥 |
 | 密钥交换 | `curve25519-sha256`、`ecdh-sha2-nistp256` |
 | 主机密钥 | Ed25519、ECDSA P-256/P-384/P-521、RSA SHA-2 |
@@ -47,7 +48,7 @@ Cloudflare Worker
 | MAC | HMAC-SHA2-256、HMAC-SHA2-512（AES-GCM 不使用独立 MAC） |
 | 终端编码 | UTF-8、GB18030、Big5（取决于浏览器 `TextDecoder` 支持） |
 
-**限制**：只能连接公网 IP 或解析结果全部为公网地址的域名；不支持出站 TCP 25 端口；不支持加密私钥、PEM/PKCS#8 私钥、SSH Agent、键盘交互认证、SFTP/SCP、端口转发、ProxyJump、SSH 压缩和会话内 rekey。
+**限制**：只能连接公网 IP 或解析结果全部为公网地址的域名；不支持出站 TCP 25 端口；不支持加密私钥、PEM/PKCS#8 私钥、SSH Agent、多因素键盘交互认证、SCP、端口转发、ProxyJump、SSH 压缩和会话内 rekey。文件上传与下载单文件限制为 64 MiB，目录删除仅支持空目录。
 
 ## 部署教程
 
@@ -135,7 +136,8 @@ npm run dev:web    # 访问 http://localhost:5173，Vite 代理 /api 到 8787
 │   ├── backend/
 │   │   ├── durable-object.ts  # 会话票据、TCP Socket 与会话生命周期
 │   │   ├── security.ts        # 票据、同源与公网目标校验
-│   │   └── session.ts         # SSH 状态机与浏览器消息桥接
+│   │   ├── session.ts         # SSH 状态机与浏览器消息桥接
+│   │   └── sftp-handler.ts    # SFTP 文件操作与传输状态
 │   ├── ssh/                   # SSH 协议、KEX、密码学、认证与通道
 │   ├── http-security.ts       # HTTPS 与安全响应头
 │   ├── types.ts               # Worker 环境、连接消息和 SSH 类型
@@ -151,6 +153,7 @@ npm run dev:web    # 访问 http://localhost:5173，Vite 代理 /api 到 8787
 | `/api/health` | `GET` | 返回 Worker 与 SSH 功能健康状态 |
 | `/api/session` | `POST` | 匿名创建一次性会话票据 |
 | `/api/ssh?ticket=...&session=...` | `GET` + WebSocket Upgrade | 进入对应 Durable Object 并建立 SSH 会话 |
+| `/api/sftp?session=...&token=...` | `GET` + WebSocket Upgrade | 使用一次性附着令牌进入当前会话的文件通道 |
 
 所有 `/api/*` 响应均允许跨站访问，并支持浏览器 `OPTIONS` 预检请求。公网访问控制应由 Cloudflare Access、WAF 和限流策略提供。
 

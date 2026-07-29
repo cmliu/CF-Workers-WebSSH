@@ -240,52 +240,144 @@
 
         <main class="workspace">
           <section id="terminal-card" class="terminal-card">
-            <div class="terminal-toolbar">
-              <div
-                class="session-target"
-                aria-label="实时连接状态"
-                data-i18n-aria-label-zh="实时连接状态"
-                data-i18n-aria-label-en="Live connection status"
-              >
-                <span class="live-orb" id="live-orb"></span>
-                <div>
-                  <strong id="session-title">无活动会话</strong>
-                  <span id="session-subtitle">选择目标并连接</span>
+            <div class="terminal-pane">
+              <div class="terminal-toolbar">
+                <div
+                  class="session-target"
+                  aria-label="实时连接状态"
+                  data-i18n-aria-label-zh="实时连接状态"
+                  data-i18n-aria-label-en="Live connection status"
+                >
+                  <span class="live-orb" id="live-orb"></span>
+                  <div>
+                    <strong id="session-title">无活动会话</strong>
+                    <span id="session-subtitle">选择目标并连接</span>
+                  </div>
+                </div>
+                <div class="session-metrics">
+                  <div><span data-i18n-zh="延迟" data-i18n-en="RTT">延迟</span><strong id="metric-rtt">--</strong></div>
+                  <div><span data-i18n-zh="时长" data-i18n-en="UPTIME">时长</span><strong id="metric-uptime">00:00</strong></div>
+                  <div><span data-i18n-zh="主机密钥" data-i18n-en="HOST KEY">主机密钥</span><strong id="metric-host-key">--</strong></div>
+                </div>
+                <div class="terminal-actions">
+                  <button id="clear-terminal" class="toolbar-button" type="button" data-i18n-zh="清屏" data-i18n-en="Clear">清屏</button>
+                  <button id="fullscreen-terminal" class="toolbar-button" type="button" data-i18n-zh="全屏" data-i18n-en="Fullscreen">全屏</button>
                 </div>
               </div>
-              <div class="session-metrics">
-                <div><span data-i18n-zh="延迟" data-i18n-en="RTT">延迟</span><strong id="metric-rtt">--</strong></div>
-                <div><span data-i18n-zh="时长" data-i18n-en="UPTIME">时长</span><strong id="metric-uptime">00:00</strong></div>
-                <div><span data-i18n-zh="主机密钥" data-i18n-en="HOST KEY">主机密钥</span><strong id="metric-host-key">--</strong></div>
-              </div>
-              <div class="terminal-actions">
-                <button id="clear-terminal" class="toolbar-button" type="button" data-i18n-zh="清屏" data-i18n-en="Clear">清屏</button>
-                <button id="fullscreen-terminal" class="toolbar-button" type="button" data-i18n-zh="全屏" data-i18n-en="Fullscreen">全屏</button>
-              </div>
-            </div>
-            <div id="terminal-stage" class="terminal-stage">
-              <div
-                id="terminal"
-                role="application"
-                aria-label="SSH 终端"
-                data-i18n-aria-label-zh="SSH 终端"
-                data-i18n-aria-label-en="SSH terminal"
-              ></div>
-              <div id="terminal-empty" class="terminal-empty">
-                <div class="empty-glyph" aria-hidden="true">&gt;_</div>
-                <h2 data-i18n-zh="终端已就绪" data-i18n-en="Your terminal is ready">终端已就绪</h2>
-                <p
-                  data-i18n-zh="从连接面板建立 SSH 连接，开始加密的边缘会话。"
-                  data-i18n-en="Open an SSH connection from the panel to start an encrypted edge session."
-                >从连接面板建立 SSH 连接，开始加密的边缘会话。</p>
-                <button id="empty-connect" class="small-button" type="button" data-i18n-zh="配置连接" data-i18n-en="Configure connection">配置连接</button>
+              <div id="terminal-stage" class="terminal-stage">
+                <div
+                  id="terminal"
+                  role="application"
+                  aria-label="SSH 终端"
+                  data-i18n-aria-label-zh="SSH 终端"
+                  data-i18n-aria-label-en="SSH terminal"
+                ></div>
+                <div id="terminal-empty" class="terminal-empty">
+                  <div class="empty-glyph" aria-hidden="true">&gt;_</div>
+                  <h2 data-i18n-zh="终端已就绪" data-i18n-en="Your terminal is ready">终端已就绪</h2>
+                  <p
+                    data-i18n-zh="从连接面板建立 SSH 连接，开始加密的边缘会话。"
+                    data-i18n-en="Open an SSH connection from the panel to start an encrypted edge session."
+                  >从连接面板建立 SSH 连接，开始加密的边缘会话。</p>
+                  <button id="empty-connect" class="small-button" type="button" data-i18n-zh="配置连接" data-i18n-en="Configure connection">配置连接</button>
+                </div>
               </div>
             </div>
-            <div class="event-bar">
-              <span id="event-message">Worker 运行时待命</span>
-              <button id="event-toggle" type="button" aria-expanded="false" data-i18n-zh="会话日志" data-i18n-en="Session log">会话日志</button>
+
+            <div class="workspace-dock">
+              <div class="event-bar">
+                <span id="event-message">Worker 运行时待命</span>
+                <div class="dock-tabs" role="tablist" aria-label="工作区面板" data-i18n-aria-label-zh="工作区面板" data-i18n-aria-label-en="Workspace panels">
+                  <button
+                    id="file-manager-tab"
+                    class="dock-tab"
+                    type="button"
+                    role="tab"
+                    aria-selected="false"
+                    aria-controls="file-manager-panel"
+                    aria-expanded="false"
+                    tabindex="0"
+                    data-i18n-zh="文件管理"
+                    data-i18n-en="Files"
+                  >文件管理</button>
+                  <button
+                    id="event-toggle"
+                    class="dock-tab"
+                    type="button"
+                    role="tab"
+                    aria-selected="false"
+                    aria-controls="event-log"
+                    aria-expanded="false"
+                    tabindex="-1"
+                    data-i18n-zh="会话日志"
+                    data-i18n-en="Session log"
+                  >会话日志</button>
+                </div>
+              </div>
+
+              <section id="file-manager-panel" class="file-manager" role="tabpanel" aria-labelledby="file-manager-tab" tabindex="0" hidden>
+                <div class="file-toolbar">
+                  <label class="file-path-field" for="file-manager-path">
+                    <span class="sr-only" data-i18n-zh="当前路径" data-i18n-en="Current path">当前路径</span>
+                    <input id="file-manager-path" type="text" value="/" autocomplete="off" spellcheck="false" aria-label="当前路径" data-i18n-aria-label-zh="当前路径" data-i18n-aria-label-en="Current path" />
+                  </label>
+                  <div class="file-actions" aria-label="文件操作" data-i18n-aria-label-zh="文件操作" data-i18n-aria-label-en="File actions">
+                    <button id="file-back" class="file-action" type="button" disabled data-i18n-aria-label-zh="返回" data-i18n-aria-label-en="Back" aria-label="返回" title="返回" data-i18n-title-zh="返回" data-i18n-title-en="Back">&#8592;</button>
+                    <button id="file-up" class="file-action" type="button" disabled data-i18n-aria-label-zh="上一级" data-i18n-aria-label-en="Up one level" aria-label="上一级" title="上一级" data-i18n-title-zh="上一级" data-i18n-title-en="Up one level">&#8593;</button>
+                    <button id="file-home" class="file-action" type="button" disabled data-i18n-aria-label-zh="主目录" data-i18n-aria-label-en="Home" aria-label="主目录" title="主目录" data-i18n-title-zh="主目录" data-i18n-title-en="Home">&#8962;</button>
+                    <button id="file-refresh" class="file-action" type="button" disabled data-i18n-aria-label-zh="刷新" data-i18n-aria-label-en="Refresh" aria-label="刷新" title="刷新" data-i18n-title-zh="刷新" data-i18n-title-en="Refresh">&#8635;</button>
+                    <span class="file-action-separator" aria-hidden="true"></span>
+                    <button id="file-upload" class="file-action file-action-wide" type="button" disabled data-i18n-zh="上传" data-i18n-en="Upload">上传</button>
+                    <button id="file-download" class="file-action file-action-wide" type="button" disabled data-i18n-zh="下载" data-i18n-en="Download">下载</button>
+                    <button id="file-mkdir" class="file-action file-action-wide" type="button" disabled data-i18n-zh="新建" data-i18n-en="New folder">新建</button>
+                    <button id="file-rename" class="file-action file-action-wide" type="button" disabled data-i18n-zh="重命名" data-i18n-en="Rename">重命名</button>
+                    <button id="file-delete" class="file-action file-action-wide danger" type="button" disabled data-i18n-zh="删除" data-i18n-en="Delete">删除</button>
+                    <input id="file-upload-input" class="sr-only" type="file" tabindex="-1" />
+                  </div>
+                </div>
+
+                <div class="file-table-wrap">
+                  <table class="file-table" aria-describedby="file-manager-status">
+                    <thead>
+                      <tr>
+                        <th scope="col" data-i18n-zh="名称" data-i18n-en="Name">名称</th>
+                        <th scope="col" data-column="size" data-i18n-zh="大小" data-i18n-en="Size">大小</th>
+                        <th scope="col" data-column="type" data-i18n-zh="类型" data-i18n-en="Type">类型</th>
+                        <th scope="col" data-column="mtime" data-i18n-zh="修改时间" data-i18n-en="Modified">修改时间</th>
+                        <th scope="col" data-column="permissions" data-i18n-zh="权限" data-i18n-en="Permissions">权限</th>
+                        <th scope="col" data-column="owner" data-i18n-zh="用户" data-i18n-en="Owner">用户</th>
+                        <th scope="col" data-column="group" data-i18n-zh="组" data-i18n-en="Group">组</th>
+                      </tr>
+                    </thead>
+                    <tbody id="file-table-body"></tbody>
+                  </table>
+                  <div id="file-manager-loading" class="file-manager-state" role="status" hidden>
+                    <span class="file-spinner" aria-hidden="true"></span>
+                    <span data-i18n-zh="正在读取目录…" data-i18n-en="Loading directory…">正在读取目录…</span>
+                  </div>
+                  <div id="file-manager-empty" class="file-manager-state" hidden data-i18n-zh="此目录为空" data-i18n-en="This folder is empty">此目录为空</div>
+                  <div id="file-manager-error" class="file-manager-state error" role="alert" hidden></div>
+                </div>
+                <div class="file-statusbar">
+                  <span id="file-manager-status" role="status" aria-live="polite" data-i18n-zh="连接 SSH 后即可管理文件" data-i18n-en="Connect to SSH to manage files">连接 SSH 后即可管理文件</span>
+                  <div id="file-manager-progress" class="file-progress" hidden>
+                    <span id="file-manager-progress-label"></span>
+                    <progress id="file-manager-progress-bar" max="100" value="0" aria-labelledby="file-manager-progress-label"></progress>
+                    <button
+                      id="file-manager-progress-cancel"
+                      class="file-progress-cancel"
+                      type="button"
+                      data-i18n-zh="取消"
+                      data-i18n-en="Cancel"
+                      data-i18n-aria-label-zh="取消文件传输"
+                      data-i18n-aria-label-en="Cancel file transfer"
+                      aria-label="取消文件传输"
+                    >取消</button>
+                  </div>
+                </div>
+              </section>
+              <div id="event-log" class="event-log" role="tabpanel" aria-labelledby="event-toggle" tabindex="0" hidden aria-live="polite"></div>
             </div>
-            <div id="event-log" class="event-log" hidden aria-live="polite"></div>
           </section>
         </main>
       </div>

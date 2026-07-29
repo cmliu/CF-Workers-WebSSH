@@ -3,6 +3,7 @@
     "target": "ES2022",
     "module": "ES2022",
     "moduleResolution": "Bundler",
+    "allowImportingTsExtensions": true,
     "lib": ["ES2022", "WebWorker"],
     "types": ["@cloudflare/workers-types"],
     "strict": true,
