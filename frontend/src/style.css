@@ -952,7 +952,7 @@ button:disabled {
 }
 
 .session-metrics > div {
-  min-width: 64px;
+  min-width: 53px;
   padding: 0 7px;
   border-left: 1px solid #1c2932;
 }
