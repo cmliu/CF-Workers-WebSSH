@@ -1165,6 +1165,7 @@ button:disabled {
 }
 
 .xterm-viewport {
+  overflow-x: hidden;
   scrollbar-color: #31424e transparent;
   scrollbar-width: thin;
 }
