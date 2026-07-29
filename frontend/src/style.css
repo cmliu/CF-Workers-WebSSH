@@ -1015,7 +1015,8 @@ button:disabled {
   min-width: 0;
   flex: 1 1 auto;
   color: #9aadb7;
-  font-weight: 650;
+  font-weight: 400;
+  text-align: right;
 }
 
 .resource-metric progress {
