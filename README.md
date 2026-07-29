@@ -12,6 +12,7 @@
 - Cloudflare Workers 原生部署，使用 Durable Objects 隔离每个 SSH 会话。
 - 基于 xterm.js 的响应式终端，支持桌面端和移动端、自动缩放、全屏和会话日志。
 - 内置 SFTP 文件管理，可浏览目录、上传/下载文件、新建与删除空目录、删除文件和重命名。
+- 内置实时进程管理，通过独立 WebSocket 和 SSH exec channel 展示 `top` 进程、CPU、负载、内存与 Swap 使用率。
 - 支持 SSH password 与单密码提示的 keyboard-interactive 认证，以及 Ed25519、RSA、ECDSA 的未加密 OpenSSH 私钥认证。
 - 首次连接时暂停认证并显示主机 SHA-256 指纹，确认后才会发送 SSH 凭据。
 - SSH 连接成功后自动写入浏览器本地"历史记录"，密码使用 AES-256-GCM 加密，私钥不保存。
@@ -154,6 +155,7 @@ npm run dev:web    # 访问 http://localhost:5173，Vite 代理 /api 到 8787
 | `/api/session` | `POST` | 匿名创建一次性会话票据 |
 | `/api/ssh?ticket=...&session=...` | `GET` + WebSocket Upgrade | 进入对应 Durable Object 并建立 SSH 会话 |
 | `/api/sftp?session=...&token=...` | `GET` + WebSocket Upgrade | 使用一次性附着令牌进入当前会话的文件通道 |
+| `/api/processes?session=...&token=...` | `GET` + WebSocket Upgrade | 使用一次性附着令牌进入当前会话的进程监控通道 |
 
 所有 `/api/*` 响应均允许跨站访问，并支持浏览器 `OPTIONS` 预检请求。公网访问控制应由 Cloudflare Access、WAF 和限流策略提供。
 

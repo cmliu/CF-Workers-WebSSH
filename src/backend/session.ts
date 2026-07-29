@@ -46,10 +46,17 @@ import { SSHChannel, type ChannelDataChunk } from '../ssh/channel';
 import { SFTPHandler } from './sftp-handler';
 import { classifyHostKey } from '../ssh/host-key';
 import { encodeString, readUint32, toBufferSource } from '../ssh/utils';
+import { parseTopSnapshot } from './top-parser';
 
 type Cipher = SSHAESGCMCipher | SSHAESCTRCipher;
 type Phase = 'version' | 'kex' | 'host-confirm' | 'auth' | 'pty' | 'shell' | 'ready' | 'closed';
 interface PendingSFTPChannelOpen {
+  readonly channelID: number;
+  readonly channel: SSHChannel;
+  timeout: ReturnType<typeof setTimeout> | null;
+  cancelled: boolean;
+}
+interface PendingProcessChannelOpen {
   readonly channelID: number;
   readonly channel: SSHChannel;
   timeout: ReturnType<typeof setTimeout> | null;
@@ -60,6 +67,11 @@ const MAX_VERSION_BYTES = 8192;
 const MAX_QUEUED_INPUT = 1024 * 1024;
 const MAX_QUEUED_SFTP_UPLOAD = 1024 * 1024;
 const SFTP_CHANNEL_OPEN_TIMEOUT_MS = 15_000;
+const PROCESS_CHANNEL_OPEN_TIMEOUT_MS = 15_000;
+const PROCESS_MAX_BUFFER_BYTES = 2 * 1024 * 1024;
+const PROCESS_SNAPSHOT_MARKER = '__CF_WEBSSH_TOP_SNAPSHOT__';
+// Octal escapes keep the delimiter itself out of the command line shown by top.
+const PROCESS_MONITOR_COMMAND = "LC_ALL=C LANG=C sh -c 'while :; do printf \"\\137\\137CF_WEBSSH_TOP_SNAPSHOT\\137\\137\\n\"; top -b -n 1 -w 512 2>/dev/null || top -b -n 1 2>/dev/null || exit 127; sleep 2; done'";
 const KEEPALIVE_NAME = new TextEncoder().encode('keepalive@openssh.com');
 
 export class SSHSession {
@@ -108,6 +120,12 @@ export class SSHSession {
   private sftpTaskChain: Promise<void> = Promise.resolve();
   private sftpQueuedUploadBytes = 0;
   private pendingSFTPChannelOpen: PendingSFTPChannelOpen | null = null;
+  private processChannel: SSHChannel | null = null;
+  private processWebSocket: WebSocket | null = null;
+  private processAttachUrl = '';
+  private processBuffer = '';
+  private processDecoder = new TextDecoder();
+  private pendingProcessChannelOpen: PendingProcessChannelOpen | null = null;
   private ignoreNextKexPacket = false;
   private inputQueue: Uint8Array[] = [];
   private queueHeadOffset = 0;
@@ -182,9 +200,14 @@ export class SSHSession {
     this.sftpHandler = null;
     this.sftpChannel = null;
     this.clearPendingSFTPChannelOpen();
+    this.clearPendingProcessChannelOpen();
+    this.processChannel = null;
+    this.processBuffer = '';
     this.channels.clear();
     try { this.sftpWebSocket?.close(normal ? 1000 : 1011, normal ? 'SSH session closed' : 'SSH session failed'); } catch { /* already closed */ }
     this.sftpWebSocket = null;
+    try { this.processWebSocket?.close(normal ? 1000 : 1011, normal ? 'SSH session closed' : 'SSH session failed'); } catch { /* already closed */ }
+    this.processWebSocket = null;
     this.pendingHostConfirmation?.resolve(false);
     this.pendingHostConfirmation = null;
     this.config.password = undefined;
@@ -590,16 +613,27 @@ export class SSHSession {
           await this.sendSFTPChannelClose(channel);
           throw error;
         }
+      } else if (channel === this.processChannel && this.processWebSocket && !this.pendingProcessChannelOpen?.cancelled) {
+        try {
+          await this.sendEncrypted(channel.buildExecRequest(PROCESS_MONITOR_COMMAND));
+        } catch (error) {
+          this.clearPendingProcessChannelOpen(channel);
+          this.processChannel = null;
+          await this.sendAuxiliaryChannelClose(channel);
+          throw error;
+        }
       } else {
-        // The file WebSocket may close while the channel open is in flight.
+        // An attachment WebSocket may close while its channel is opening.
         this.clearPendingSFTPChannelOpen(channel);
-        await this.sendSFTPChannelClose(channel);
+        this.clearPendingProcessChannelOpen(channel);
+        await this.sendAuxiliaryChannelClose(channel);
       }
       return;
     }
     if (type === SSH_MSG_CHANNEL_OPEN_FAILURE) {
       channel.handleOpenFailure(payload);
       this.clearPendingSFTPChannelOpen(channel);
+      this.clearPendingProcessChannelOpen(channel);
       this.channels.delete(channelID);
       if (isShell) throw new Error('SSH server rejected the session channel');
       if (channel === this.sftpChannel) {
@@ -607,6 +641,9 @@ export class SSHSession {
         this.sftpHandler = null;
         this.sftpChannel = null;
         this.sendSFTPError('init', 'SSH server rejected the SFTP channel');
+      } else if (channel === this.processChannel) {
+        this.processChannel = null;
+        this.sendProcessError('SSH server rejected the process-monitor channel');
       }
       return;
     }
@@ -637,6 +674,15 @@ export class SSHSession {
         this.sftpChannel = null;
         this.sendSFTPError('init', 'SSH server rejected the SFTP subsystem');
         await this.sendSFTPChannelClose(channel);
+      } else if (channel === this.processChannel) {
+        this.clearPendingProcessChannelOpen(channel);
+        if (type === SSH_MSG_CHANNEL_FAILURE) {
+          this.processChannel = null;
+          this.sendProcessError('SSH server rejected the top command');
+          await this.sendAuxiliaryChannelClose(channel);
+        } else {
+          this.sendProcessJson({ type: 'process_ready' });
+        }
       }
       return;
     }
@@ -652,6 +698,8 @@ export class SSHSession {
           this.sendSFTPError('protocol', error instanceof Error ? error.message : String(error));
           await this.closeSFTPChannel();
         }
+      } else if (channel === this.processChannel) {
+        this.consumeProcessOutput(output);
       }
       await this.adjustLocalWindow(channel);
       return;
@@ -663,6 +711,9 @@ export class SSHSession {
         this.ws.send(output);
       } else if (channel === this.sftpChannel) {
         this.sendSFTPError('protocol', new TextDecoder().decode(output) || 'SFTP channel reported an error');
+      } else if (channel === this.processChannel) {
+        const message = new TextDecoder().decode(output).trim();
+        if (message) this.sendProcessError(message.slice(0, 512));
       }
       await this.adjustLocalWindow(channel);
       return;
@@ -677,6 +728,7 @@ export class SSHSession {
       channel.handleEof(payload);
       if (isShell) this.status('remote_eof', 'SSH server finished sending output');
       else if (channel === this.sftpChannel) this.sftpHandler?.onClosed();
+      else if (channel === this.processChannel) this.flushProcessBuffer();
       return;
     }
     if (type === SSH_MSG_CHANNEL_CLOSE) {
@@ -692,6 +744,11 @@ export class SSHSession {
           this.sftpHandler?.onClosed();
           this.sftpHandler = null;
           this.sftpChannel = null;
+        } else if (channel === this.processChannel) {
+          this.clearPendingProcessChannelOpen(channel);
+          this.flushProcessBuffer();
+          this.processChannel = null;
+          this.sendProcessError('The process monitor stopped');
         }
       }
       return;
@@ -710,12 +767,146 @@ export class SSHSession {
     });
     this.status('shell_ready', 'Shell is ready');
     if (this.sftpAttachUrl) this.sendJson({ type: 'sftp_attach', url: this.sftpAttachUrl });
+    if (this.processAttachUrl) this.sendJson({ type: 'process_attach', url: this.processAttachUrl });
     void this.flushInput();
   }
 
   setSFTPAttachUrl(url: string): void {
     if (!/^\/api\/sftp\?/.test(url)) throw new Error('Invalid SFTP attach URL');
     this.sftpAttachUrl = url;
+  }
+
+  setProcessAttachUrl(url: string): void {
+    if (!/^\/api\/processes\?/.test(url)) throw new Error('Invalid process attach URL');
+    this.processAttachUrl = url;
+  }
+
+  attachProcessWebSocket(ws: WebSocket): void {
+    if (this.phase === 'closed' || this.processWebSocket) {
+      try { ws.close(1008, 'Process monitor is unavailable'); } catch { /* already closed */ }
+      return;
+    }
+    this.processWebSocket = ws;
+  }
+
+  detachProcessWebSocket(ws: WebSocket): void {
+    if (this.processWebSocket !== ws) return;
+    this.processWebSocket = null;
+    void this.closeProcessChannel();
+  }
+
+  async handleProcessClientMessage(message: string | ArrayBuffer): Promise<void> {
+    if (this.phase === 'closed' || !this.processWebSocket) return;
+    if (message instanceof ArrayBuffer || message.length > 4096) throw new Error('Invalid process-monitor message');
+    let decoded: unknown;
+    try { decoded = JSON.parse(message); } catch { throw new Error('Invalid process-monitor JSON'); }
+    if (!decoded || typeof decoded !== 'object' || Array.isArray(decoded)) throw new Error('Invalid process-monitor message');
+    const value = decoded as Record<string, unknown>;
+    if (value.type === 'ping') { this.sendProcessJson({ type: 'pong' }); return; }
+    if (value.type === 'process_start') { await this.openProcessChannel(); return; }
+    if (value.type === 'process_stop') { await this.closeProcessChannel(); return; }
+    throw new Error('Unsupported process-monitor message');
+  }
+
+  private async openProcessChannel(): Promise<void> {
+    if (!this.processWebSocket) throw new Error('Process-monitor WebSocket is not attached');
+    if (this.phase !== 'ready') throw new Error('SSH connection is not ready');
+    if (this.pendingProcessChannelOpen?.cancelled) throw new Error('The previous process channel is still closing');
+    if (this.processChannel) {
+      this.sendProcessJson({ type: 'process_ready' });
+      return;
+    }
+    const channelID = this.nextChannelID++;
+    const channel = new SSHChannel();
+    const pending: PendingProcessChannelOpen = { channelID, channel, timeout: null, cancelled: false };
+    this.channels.set(channelID, channel);
+    this.processChannel = channel;
+    this.processBuffer = '';
+    this.processDecoder = new TextDecoder();
+    this.pendingProcessChannelOpen = pending;
+    try {
+      await this.sendEncrypted(channel.buildOpenSession(channelID));
+      if (this.pendingProcessChannelOpen === pending) {
+        pending.timeout = setTimeout(() => this.expirePendingProcessChannelOpen(pending), PROCESS_CHANNEL_OPEN_TIMEOUT_MS);
+      }
+    } catch (error) {
+      this.clearPendingProcessChannelOpen(channel);
+      this.channels.delete(channelID);
+      this.processChannel = null;
+      throw error;
+    }
+  }
+
+  private async closeProcessChannel(): Promise<void> {
+    const channel = this.processChannel;
+    const pending = this.pendingProcessChannelOpen;
+    if (pending?.channel === channel) pending.cancelled = true;
+    this.processChannel = null;
+    this.processBuffer = '';
+    if (!channel?.isOpen()) return;
+    await this.sendAuxiliaryChannelClose(channel);
+  }
+
+  private consumeProcessOutput(data: Uint8Array): void {
+    this.processBuffer += this.processDecoder.decode(data, { stream: true });
+    if (this.processBuffer.length > PROCESS_MAX_BUFFER_BYTES) {
+      const marker = this.processBuffer.lastIndexOf(PROCESS_SNAPSHOT_MARKER);
+      this.processBuffer = marker >= 0 ? this.processBuffer.slice(marker) : '';
+      this.sendProcessError('Process snapshot exceeded the buffer limit');
+      return;
+    }
+    while (true) {
+      const first = this.processBuffer.indexOf(PROCESS_SNAPSHOT_MARKER);
+      if (first < 0) {
+        if (this.processBuffer.length > PROCESS_SNAPSHOT_MARKER.length) this.processBuffer = '';
+        return;
+      }
+      if (first > 0) this.processBuffer = this.processBuffer.slice(first);
+      const next = this.processBuffer.indexOf(PROCESS_SNAPSHOT_MARKER, PROCESS_SNAPSHOT_MARKER.length);
+      if (next < 0) return;
+      this.emitProcessSnapshot(this.processBuffer.slice(PROCESS_SNAPSHOT_MARKER.length, next));
+      this.processBuffer = this.processBuffer.slice(next);
+    }
+  }
+
+  private flushProcessBuffer(): void {
+    this.processBuffer += this.processDecoder.decode();
+    const marker = this.processBuffer.lastIndexOf(PROCESS_SNAPSHOT_MARKER);
+    if (marker >= 0) this.emitProcessSnapshot(this.processBuffer.slice(marker + PROCESS_SNAPSHOT_MARKER.length));
+    this.processBuffer = '';
+    this.processDecoder = new TextDecoder();
+  }
+
+  private emitProcessSnapshot(raw: string): void {
+    const snapshot = parseTopSnapshot(raw);
+    if (snapshot) this.sendProcessJson({ type: 'process_snapshot', ...snapshot });
+  }
+
+  private expirePendingProcessChannelOpen(expected: PendingProcessChannelOpen): void {
+    if (this.pendingProcessChannelOpen !== expected) return;
+    this.pendingProcessChannelOpen = null;
+    expected.timeout = null;
+    expected.cancelled = true;
+    if (this.processChannel === expected.channel) this.processChannel = null;
+    this.sendProcessError('Timed out opening the process-monitor channel');
+    if (expected.channel.isOpen()) void this.sendAuxiliaryChannelClose(expected.channel);
+    try { this.processWebSocket?.close(1011, 'Process channel setup timed out'); } catch { /* already closed */ }
+  }
+
+  private clearPendingProcessChannelOpen(channel?: SSHChannel): void {
+    const pending = this.pendingProcessChannelOpen;
+    if (!pending || (channel && pending.channel !== channel)) return;
+    if (pending.timeout) clearTimeout(pending.timeout);
+    pending.timeout = null;
+    this.pendingProcessChannelOpen = null;
+  }
+
+  private sendProcessJson(value: unknown): void {
+    if (this.processWebSocket?.readyState === WebSocket.OPEN) this.processWebSocket.send(JSON.stringify(value));
+  }
+
+  private sendProcessError(message: string): void {
+    this.sendProcessJson({ type: 'process_error', message });
   }
 
   attachSFTPWebSocket(ws: WebSocket): void {
@@ -888,6 +1079,10 @@ export class SSHSession {
   }
 
   private async sendSFTPChannelClose(channel: SSHChannel): Promise<void> {
+    await this.sendAuxiliaryChannelClose(channel);
+  }
+
+  private async sendAuxiliaryChannelClose(channel: SSHChannel): Promise<void> {
     if (!channel.isOpen() || channel.hasSentClose()) return;
     try {
       await this.sendEncrypted(channel.buildEof());

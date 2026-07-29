@@ -51,13 +51,19 @@ async function sshUpgrade(request: Request, env: Env): Promise<Response> {
   headers.delete('Cookie');
   headers.delete('Authorization');
   const sftpAttachToken = crypto.randomUUID();
+  const processAttachToken = crypto.randomUUID();
   const sftpAttachUrl = new URL('/api/sftp', 'https://session.invalid');
   sftpAttachUrl.searchParams.set('session', id.toString());
   sftpAttachUrl.searchParams.set('token', sftpAttachToken);
+  const processAttachUrl = new URL('/api/processes', 'https://session.invalid');
+  processAttachUrl.searchParams.set('session', id.toString());
+  processAttachUrl.searchParams.set('token', processAttachToken);
   headers.set('x-session-ticket', ticket);
   headers.set('x-client-ip', clientAddress(request));
   headers.set('x-sftp-attach-token', sftpAttachToken);
   headers.set('x-sftp-attach-url', `${sftpAttachUrl.pathname}${sftpAttachUrl.search}`);
+  headers.set('x-process-attach-token', processAttachToken);
+  headers.set('x-process-attach-url', `${processAttachUrl.pathname}${processAttachUrl.search}`);
   const response = await env.SSH_SESSIONS.get(id).fetch(new Request('https://session.internal/connect', { headers }));
   if (response.status === 401) return jsonError('Invalid, expired, or already used session ticket', 401);
   return response;
@@ -84,6 +90,30 @@ async function sftpUpgrade(request: Request, env: Env): Promise<Response> {
     headers,
   }));
   if (response.status === 401) return jsonError('Invalid, expired, or already used SFTP attachment token', 401);
+  return response;
+}
+
+async function processUpgrade(request: Request, env: Env): Promise<Response> {
+  if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') return jsonError('WebSocket upgrade required', 426);
+  if (!hasValidWebSocketOrigin(request)) return jsonError('WebSocket origin is not allowed', 403);
+  const url = new URL(request.url);
+  const sessionId = url.searchParams.get('session');
+  const token = url.searchParams.get('token');
+  if (!sessionId || !token) return jsonError('Missing process attachment authorization', 401);
+  let id: DurableObjectId;
+  try { id = env.SSH_SESSIONS.idFromString(sessionId); } catch { return jsonError('Invalid session identifier', 401); }
+  const headers = new Headers(request.headers);
+  headers.delete('Cookie');
+  headers.delete('Authorization');
+  headers.delete('x-session-ticket');
+  headers.delete('x-client-ip');
+  headers.delete('x-process-attach-url');
+  headers.set('x-process-attach-token', token);
+  const response = await env.SSH_SESSIONS.get(id).fetch(new Request('https://session.internal/processes', {
+    method: 'GET',
+    headers,
+  }));
+  if (response.status === 401) return jsonError('Invalid, expired, or already used process attachment token', 401);
   return response;
 }
 
@@ -116,6 +146,10 @@ export default {
       if (url.pathname === '/api/sftp') {
         if (request.method !== 'GET') return corsResponse(jsonError('Method not allowed', 405));
         return corsResponse(await sftpUpgrade(request, env));
+      }
+      if (url.pathname === '/api/processes') {
+        if (request.method !== 'GET') return corsResponse(jsonError('Method not allowed', 405));
+        return corsResponse(await processUpgrade(request, env));
       }
       if (isApiRequest) return corsResponse(jsonError('Not found', 404));
       if (!env.ASSETS) return jsonError('Static assets binding is not configured', 503);
