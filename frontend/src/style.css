@@ -2051,8 +2051,38 @@ button:disabled {
     padding: 8px;
   }
 
-  .resource-metrics {
+  .terminal-toolbar {
     gap: 6px;
+    padding-inline: 7px;
+  }
+
+  .session-target {
+    flex: 0 1 88px;
+    gap: 6px;
+  }
+
+  .resource-metrics {
+    flex: 0 1 180px;
+    gap: 4px;
+  }
+
+  .resource-metric {
+    flex: 1 1 0;
+  }
+
+  .resource-metric-line {
+    justify-content: center;
+    gap: 3px;
+  }
+
+  .terminal-actions {
+    flex: 0 0 auto;
+    gap: 3px;
+    margin-left: auto;
+  }
+
+  .terminal-actions .toolbar-button {
+    padding-inline: 6px;
   }
 
   .terminal-card {
