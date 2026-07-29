@@ -312,7 +312,7 @@ const ui = {
 
 function updateRevealPasswordButton(): void {
   const revealed = ui.password.type === 'text';
-  ui.revealPassword.textContent = revealed ? bilingual('隐藏', 'Hide') : bilingual('显示', 'Show');
+  ui.revealPassword.setAttribute('aria-pressed', revealed ? 'true' : 'false');
   ui.revealPassword.setAttribute('aria-label', revealed
     ? bilingual('隐藏密码', 'Hide password')
     : bilingual('显示密码', 'Show password'));

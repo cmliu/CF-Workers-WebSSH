@@ -715,7 +715,7 @@ button:disabled {
 }
 
 .input-action-wrap input {
-  padding-right: 82px;
+  padding-right: 44px;
 }
 
 .input-action {
@@ -723,6 +723,9 @@ button:disabled {
   top: 5px;
   right: 5px;
   bottom: 5px;
+  display: grid;
+  width: 34px;
+  place-items: center;
   border: 0;
   border-radius: 5px;
   background: var(--surface-2);
@@ -730,6 +733,32 @@ button:disabled {
   font-size: 8px;
   font-weight: 800;
   text-transform: uppercase;
+}
+
+.input-action:hover {
+  color: var(--text);
+}
+
+.reveal-icon {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.reveal-icon-eye-off {
+  display: none;
+}
+
+.input-action[aria-pressed='true'] .reveal-icon-eye {
+  display: none;
+}
+
+.input-action[aria-pressed='true'] .reveal-icon-eye-off {
+  display: block;
 }
 
 .key-field {
