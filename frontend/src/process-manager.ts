@@ -33,6 +33,9 @@ interface ProcessEntry {
   command: string;
 }
 
+type ProcessSortKey = 'pid' | 'user' | 'memoryBytes' | 'memoryPercent' | 'cpuPercent' | 'state' | 'time';
+type SortDirection = 'ascending' | 'descending';
+
 interface ProcessSnapshot {
   type: 'process_snapshot';
   metrics: {
@@ -135,12 +138,19 @@ export class ProcessManager {
   private socket: WebSocket | null = null;
   private generation = 0;
   private snapshot: ProcessSnapshot | null = null;
+  private sortKey: ProcessSortKey = 'cpuPercent';
+  private sortDirection: SortDirection = 'descending';
   private readonly progressAnimations = new Map<HTMLProgressElement, number>();
 
   constructor(options: ProcessManagerOptions) {
     this.elements = options.elements;
     this.getLanguage = options.getLanguage;
     this.onError = options.onError;
+    this.elements.panel.addEventListener('click', (event) => {
+      const button = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-process-sort]');
+      if (!button) return;
+      this.changeSort(button.dataset.processSort as ProcessSortKey);
+    });
     this.render();
   }
 
@@ -183,7 +193,64 @@ export class ProcessManager {
   }
 
   setLanguage(): void {
+    this.updateSortHeaders();
     this.render();
+  }
+
+  private changeSort(key: ProcessSortKey): void {
+    if (this.sortKey === key) {
+      this.sortDirection = this.sortDirection === 'ascending' ? 'descending' : 'ascending';
+    } else {
+      this.sortKey = key;
+      this.sortDirection = key === 'user' || key === 'state' ? 'ascending' : 'descending';
+    }
+    this.updateSortHeaders();
+    this.render();
+  }
+
+  private updateSortHeaders(): void {
+    for (const button of this.elements.panel.querySelectorAll<HTMLButtonElement>('[data-process-sort]')) {
+      const key = button.dataset.processSort as ProcessSortKey;
+      const header = button.closest<HTMLTableCellElement>('th');
+      const active = key === this.sortKey;
+      header?.setAttribute('aria-sort', active ? this.sortDirection : 'none');
+      const label = button.dataset[this.getLanguage() === 'zh-CN' ? 'i18nZh' : 'i18nEn'] ?? button.textContent ?? '';
+      button.setAttribute('aria-label', active
+        ? this.getLanguage() === 'zh-CN'
+          ? `${label}，当前${this.sortDirection === 'ascending' ? '升序' : '降序'}，点击切换排序`
+          : `${label}, currently ${this.sortDirection}; activate to reverse`
+        : this.getLanguage() === 'zh-CN'
+          ? `按 ${label} 排序`
+          : `Sort by ${label}`);
+    }
+  }
+
+  private sortedProcesses(processes: ProcessEntry[]): ProcessEntry[] {
+    const key = this.sortKey;
+    const direction = this.sortDirection === 'ascending' ? 1 : -1;
+    const value = (process: ProcessEntry): string | number | null => {
+      if (key === 'time') return this.processTimeSeconds(process.time);
+      return process[key];
+    };
+    return processes.map((process, index) => ({ process, index })).sort((left, right) => {
+      const a = value(left.process);
+      const b = value(right.process);
+      if (a === null && b === null) return left.index - right.index;
+      if (a === null) return 1;
+      if (b === null) return -1;
+      const compared = typeof a === 'number' && typeof b === 'number'
+        ? a - b
+        : String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' });
+      return compared === 0 ? left.index - right.index : compared * direction;
+    }).map(({ process }) => process);
+  }
+
+  private processTimeSeconds(value: string): number | null {
+    const parts = value.replace(',', '.').split(':').map(Number);
+    if (parts.some((part) => !Number.isFinite(part))) return null;
+    if (parts.length === 3) return (parts[0] * 3600) + (parts[1] * 60) + parts[2];
+    if (parts.length === 2) return (parts[0] * 60) + parts[1];
+    return parts.length === 1 ? parts[0] : null;
   }
 
   private handleMessage(serialized: string): void {
@@ -219,7 +286,7 @@ export class ProcessManager {
     }
 
     const fragment = document.createDocumentFragment();
-    for (const process of snapshot.processes) {
+    for (const process of this.sortedProcesses(snapshot.processes)) {
       const row = document.createElement('tr');
       const values = [
         String(process.pid),

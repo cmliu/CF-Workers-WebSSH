@@ -456,13 +456,13 @@
                   <table class="process-table" aria-describedby="process-manager-status">
                     <thead>
                       <tr>
-                        <th scope="col">PID</th>
-                        <th scope="col" data-i18n-zh="用户" data-i18n-en="User">用户</th>
-                        <th scope="col" data-i18n-zh="内存" data-i18n-en="Memory">内存</th>
-                        <th scope="col">MEM%</th>
-                        <th scope="col">CPU%</th>
-                        <th scope="col" data-i18n-zh="状态" data-i18n-en="State">状态</th>
-                        <th scope="col" data-i18n-zh="时间" data-i18n-en="Time">时间</th>
+                        <th scope="col" aria-sort="none"><button class="process-sort" type="button" data-process-sort="pid" data-i18n-zh="PID" data-i18n-en="PID">PID</button></th>
+                        <th scope="col" aria-sort="none"><button class="process-sort" type="button" data-process-sort="user" data-i18n-zh="用户" data-i18n-en="User">用户</button></th>
+                        <th scope="col" aria-sort="none"><button class="process-sort" type="button" data-process-sort="memoryBytes" data-i18n-zh="内存" data-i18n-en="Memory">内存</button></th>
+                        <th scope="col" aria-sort="none"><button class="process-sort" type="button" data-process-sort="memoryPercent" data-i18n-zh="MEM%" data-i18n-en="MEM%">MEM%</button></th>
+                        <th scope="col" aria-sort="descending"><button class="process-sort" type="button" data-process-sort="cpuPercent" data-i18n-zh="CPU%" data-i18n-en="CPU%">CPU%</button></th>
+                        <th scope="col" aria-sort="none"><button class="process-sort" type="button" data-process-sort="state" data-i18n-zh="状态" data-i18n-en="State">状态</button></th>
+                        <th scope="col" aria-sort="none"><button class="process-sort" type="button" data-process-sort="time" data-i18n-zh="时间" data-i18n-en="Time">时间</button></th>
                         <th scope="col" data-i18n-zh="名称/命令行" data-i18n-en="Name / command">名称/命令行</th>
                       </tr>
                     </thead>
