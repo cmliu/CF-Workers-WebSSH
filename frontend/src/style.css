@@ -1395,7 +1395,8 @@ button:disabled {
 .process-table th:nth-child(5) { width: 7%; }
 .process-table th:nth-child(6) { width: 6%; }
 .process-table th:nth-child(7) { width: 9%; }
-.process-table th:nth-child(8) { width: 47%; text-align: left; }
+.process-table th:nth-child(8) { width: 47%; text-align: center; }
+.process-table th:nth-child(8) .process-sort { text-align: center; }
 
 .process-sort {
   position: relative;
