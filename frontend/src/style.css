@@ -953,12 +953,17 @@ button:disabled {
   display: grid;
   min-width: 0;
   min-height: 0;
-  grid-template-rows: minmax(0, 2fr) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) minmax(34px, 0fr);
   overflow: hidden;
   border: 1px solid var(--border);
   border-radius: 12px;
   background: var(--terminal);
   box-shadow: var(--shadow);
+  transition: grid-template-rows 220ms cubic-bezier(0.2, 0.75, 0.2, 1);
+}
+
+.terminal-card.workspace-panel-open {
+  grid-template-rows: minmax(0, 2fr) minmax(34px, 1fr);
 }
 
 .terminal-pane {

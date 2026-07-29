@@ -1211,19 +1211,28 @@ function sendHostKeyDecision(accept: boolean): void {
 }
 
 type WorkspaceTab = 'files' | 'log';
+let activeWorkspaceTab: WorkspaceTab | null = null;
 
-function setWorkspaceTab(tab: WorkspaceTab, focus = false): void {
+function setWorkspaceTab(tab: WorkspaceTab | null, focus = false, rovingTab = tab ?? activeWorkspaceTab ?? 'files'): void {
   const filesActive = tab === 'files';
+  const logActive = tab === 'log';
+  activeWorkspaceTab = tab;
+  ui.terminalCard.classList.toggle('workspace-panel-open', tab !== null);
   ui.fileManagerPanel.hidden = !filesActive;
-  ui.eventLog.hidden = filesActive;
+  ui.eventLog.hidden = !logActive;
   ui.fileManagerTab.setAttribute('aria-selected', String(filesActive));
-  ui.eventToggle.setAttribute('aria-selected', String(!filesActive));
-  ui.eventToggle.setAttribute('aria-expanded', String(!filesActive));
-  ui.fileManagerTab.tabIndex = filesActive ? 0 : -1;
-  ui.eventToggle.tabIndex = filesActive ? -1 : 0;
-  if (!filesActive) requestAnimationFrame(() => { ui.eventLog.scrollTop = ui.eventLog.scrollHeight; });
-  if (focus) (filesActive ? ui.fileManagerTab : ui.eventToggle).focus();
+  ui.eventToggle.setAttribute('aria-selected', String(logActive));
+  ui.fileManagerTab.setAttribute('aria-expanded', String(filesActive));
+  ui.eventToggle.setAttribute('aria-expanded', String(logActive));
+  ui.fileManagerTab.tabIndex = rovingTab === 'files' ? 0 : -1;
+  ui.eventToggle.tabIndex = rovingTab === 'log' ? 0 : -1;
+  if (logActive) requestAnimationFrame(() => { ui.eventLog.scrollTop = ui.eventLog.scrollHeight; });
+  if (focus) (rovingTab === 'files' ? ui.fileManagerTab : ui.eventToggle).focus();
   requestAnimationFrame(() => fitTerminal(true));
+}
+
+function toggleWorkspaceTab(tab: WorkspaceTab): void {
+  setWorkspaceTab(activeWorkspaceTab === tab ? null : tab, false, tab);
 }
 
 function handleWorkspaceTabKey(event: KeyboardEvent): void {
@@ -1847,8 +1856,8 @@ ui.fullscreenTerminal.addEventListener('click', async () => {
   else await ui.terminalCard.requestFullscreen();
 });
 document.addEventListener('fullscreenchange', () => fitTerminal(true));
-ui.fileManagerTab.addEventListener('click', () => setWorkspaceTab('files'));
-ui.eventToggle.addEventListener('click', () => setWorkspaceTab('log'));
+ui.fileManagerTab.addEventListener('click', () => toggleWorkspaceTab('files'));
+ui.eventToggle.addEventListener('click', () => toggleWorkspaceTab('log'));
 ui.fileManagerTab.addEventListener('keydown', handleWorkspaceTabKey);
 ui.eventToggle.addEventListener('keydown', handleWorkspaceTabKey);
 ui.languageToggle.addEventListener('click', () => {
@@ -1895,7 +1904,7 @@ async function initialize(): Promise<void> {
   setPanelOpen(panelOpen);
   setAuthMethod('password');
   setState('idle');
-  setWorkspaceTab('files');
+  setWorkspaceTab(null);
   ui.sessionTitle.textContent = bilingual('无活动会话', 'No active session');
   ui.sessionSubtitle.textContent = bilingual('选择目标并连接', 'Choose a target and connect');
   ui.eventMessage.textContent = bilingual('Worker 运行时待命', 'Worker runtime standing by');
@@ -1916,6 +1925,6 @@ void initialize().catch(() => {
   setPanelOpen(panelOpen);
   setAuthMethod('password');
   setState('idle');
-  setWorkspaceTab('files');
+  setWorkspaceTab(null);
   initializeCompatibilityAPI();
 });

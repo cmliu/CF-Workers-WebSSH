@@ -293,8 +293,9 @@
                     class="dock-tab"
                     type="button"
                     role="tab"
-                    aria-selected="true"
+                    aria-selected="false"
                     aria-controls="file-manager-panel"
+                    aria-expanded="false"
                     tabindex="0"
                     data-i18n-zh="文件管理"
                     data-i18n-en="Files"
@@ -314,7 +315,7 @@
                 </div>
               </div>
 
-              <section id="file-manager-panel" class="file-manager" role="tabpanel" aria-labelledby="file-manager-tab" tabindex="0">
+              <section id="file-manager-panel" class="file-manager" role="tabpanel" aria-labelledby="file-manager-tab" tabindex="0" hidden>
                 <div class="file-toolbar">
                   <label class="file-path-field" for="file-manager-path">
                     <span class="sr-only" data-i18n-zh="当前路径" data-i18n-en="Current path">当前路径</span>
