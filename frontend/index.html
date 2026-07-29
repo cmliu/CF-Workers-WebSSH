@@ -258,8 +258,24 @@
                   <div><span data-i18n-zh="主机密钥" data-i18n-en="HOST KEY">主机密钥</span><strong id="metric-host-key">--</strong></div>
                 </div>
                 <div class="terminal-actions">
-                  <button id="clear-terminal" class="toolbar-button" type="button" data-i18n-zh="清屏" data-i18n-en="Clear">清屏</button>
-                  <button id="fullscreen-terminal" class="toolbar-button" type="button" data-i18n-zh="全屏" data-i18n-en="Fullscreen">全屏</button>
+                  <button id="clear-terminal" class="toolbar-button" type="button" aria-label="清屏" data-i18n-aria-label-zh="清屏" data-i18n-aria-label-en="Clear">
+                    <svg class="toolbar-button-icon" viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M3 6h18" />
+                      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                      <line x1="10" x2="10" y1="11" y2="17" />
+                      <line x1="14" x2="14" y1="11" y2="17" />
+                    </svg>
+                    <span class="button-label" data-i18n-zh="清屏" data-i18n-en="Clear">清屏</span>
+                  </button>
+                  <button id="fullscreen-terminal" class="toolbar-button" type="button" aria-label="全屏" data-i18n-aria-label-zh="全屏" data-i18n-aria-label-en="Fullscreen">
+                    <svg class="toolbar-button-icon" viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M8 3H5a2 2 0 0 0-2 2v3" />
+                      <path d="M21 8V5a2 2 0 0 0-2-2h-3" />
+                      <path d="M3 16v3a2 2 0 0 0 2 2h3" />
+                      <path d="M16 21h3a2 2 0 0 0 2-2v-3" />
+                    </svg>
+                    <span class="button-label" data-i18n-zh="全屏" data-i18n-en="Fullscreen">全屏</span>
+                  </button>
                 </div>
               </div>
               <div id="terminal-stage" class="terminal-stage">
@@ -295,9 +311,12 @@
                     aria-controls="file-manager-panel"
                     aria-expanded="false"
                     tabindex="0"
+                    aria-label="文件管理"
+                    data-i18n-aria-label-zh="文件管理"
+                    data-i18n-aria-label-en="Files"
                   >
                     <svg class="dock-tab-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 7.5h6l2-2h9a1.5 1.5 0 0 1 1.5 1.5v11a1.5 1.5 0 0 1-1.5 1.5h-17A1.5 1.5 0 0 1 2 18V9a1.5 1.5 0 0 1 1.5-1.5Z" /></svg>
-                    <span data-i18n-zh="文件管理" data-i18n-en="Files">文件管理</span>
+                    <span class="button-label" data-i18n-zh="文件管理" data-i18n-en="Files">文件管理</span>
                   </button>
                   <button
                     id="event-toggle"
@@ -308,9 +327,12 @@
                     aria-controls="event-log"
                     aria-expanded="false"
                     tabindex="-1"
+                    aria-label="会话日志"
+                    data-i18n-aria-label-zh="会话日志"
+                    data-i18n-aria-label-en="Session log"
                   >
                     <svg class="dock-tab-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 2.5h9l4 4V21H6a2 2 0 0 1-2-2V4.5a2 2 0 0 1 2-2Z" /><path d="M15 2.5V7h4M8 11h7M8 15h7" /></svg>
-                    <span data-i18n-zh="会话日志" data-i18n-en="Session log">会话日志</span>
+                    <span class="button-label" data-i18n-zh="会话日志" data-i18n-en="Session log">会话日志</span>
                   </button>
                 </div>
               </div>

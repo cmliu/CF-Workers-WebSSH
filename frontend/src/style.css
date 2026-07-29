@@ -1014,6 +1014,10 @@ button:disabled {
 }
 
 .terminal-actions .toolbar-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
   padding: 5px 7px;
   border-color: #263642;
   background: #151f28;
@@ -1166,6 +1170,17 @@ button:disabled {
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-width: 1.7;
+}
+
+.toolbar-button-icon {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
 }
 
 .dock-tab:hover {
@@ -1816,6 +1831,15 @@ button:disabled {
   .file-table th:nth-child(2) { width: 16%; }
   .file-table th:nth-child(3) { width: 16%; }
   .file-table th:nth-child(4) { width: 28%; }
+
+  .button-label {
+    display: none;
+  }
+
+  .dock-tab {
+    min-width: 0;
+    padding: 0 13px;
+  }
 }
 
 @media (max-width: 480px) {
