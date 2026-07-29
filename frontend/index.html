@@ -263,6 +263,32 @@
                     <span id="session-subtitle">选择目标并连接</span>
                   </div>
                 </div>
+                <div class="resource-metrics" aria-label="系统资源" data-i18n-aria-label-zh="系统资源" data-i18n-aria-label-en="System resources">
+                  <div class="resource-metric resource-cpu">
+                    <div class="resource-metric-line">
+                      <span data-i18n-zh="CPU" data-i18n-en="CPU">CPU</span>
+                      <strong id="resource-cpu-value" class="resource-percentage">--</strong>
+                      <strong id="resource-cpu-load" class="resource-detail">-- / -- / --</strong>
+                    </div>
+                    <progress id="resource-cpu-progress" max="100" value="0" aria-label="CPU 使用率" data-i18n-aria-label-zh="CPU 使用率" data-i18n-aria-label-en="CPU usage"></progress>
+                  </div>
+                  <div class="resource-metric resource-memory">
+                    <div class="resource-metric-line">
+                      <span data-i18n-zh="内存" data-i18n-en="MEM">内存</span>
+                      <strong id="resource-memory-value" class="resource-percentage">--</strong>
+                      <strong id="resource-memory-amount" class="resource-detail">--/--</strong>
+                    </div>
+                    <progress id="resource-memory-progress" max="100" value="0" aria-label="内存使用率" data-i18n-aria-label-zh="内存使用率" data-i18n-aria-label-en="Memory usage"></progress>
+                  </div>
+                  <div class="resource-metric resource-swap">
+                    <div class="resource-metric-line">
+                      <span data-i18n-zh="Swap" data-i18n-en="SWAP">Swap</span>
+                      <strong id="resource-swap-value" class="resource-percentage">--</strong>
+                      <strong id="resource-swap-amount" class="resource-detail">--/--</strong>
+                    </div>
+                    <progress id="resource-swap-progress" max="100" value="0" aria-label="Swap 使用率" data-i18n-aria-label-zh="Swap 使用率" data-i18n-aria-label-en="Swap usage"></progress>
+                  </div>
+                </div>
                 <div class="session-metrics">
                   <div><span data-i18n-zh="延迟" data-i18n-en="RTT">延迟</span><strong id="metric-rtt">--</strong></div>
                   <div><span data-i18n-zh="时长" data-i18n-en="UPTIME">时长</span><strong id="metric-uptime">00:00</strong></div>
@@ -328,6 +354,22 @@
                   >
                     <svg class="dock-tab-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 7.5h6l2-2h9a1.5 1.5 0 0 1 1.5 1.5v11a1.5 1.5 0 0 1-1.5 1.5h-17A1.5 1.5 0 0 1 2 18V9a1.5 1.5 0 0 1 1.5-1.5Z" /></svg>
                     <span class="button-label" data-i18n-zh="文件管理" data-i18n-en="Files">文件管理</span>
+                  </button>
+                  <button
+                    id="process-manager-tab"
+                    class="dock-tab"
+                    type="button"
+                    role="tab"
+                    aria-selected="false"
+                    aria-controls="process-manager-panel"
+                    aria-expanded="false"
+                    tabindex="-1"
+                    aria-label="进程管理"
+                    data-i18n-aria-label-zh="进程管理"
+                    data-i18n-aria-label-en="Processes"
+                  >
+                    <svg class="dock-tab-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2" /><path d="m7 9 2.5 2.5L7 14M12.5 14H17" /></svg>
+                    <span class="button-label" data-i18n-zh="进程管理" data-i18n-en="Processes">进程管理</span>
                   </button>
                   <button
                     id="event-toggle"
@@ -407,6 +449,31 @@
                       aria-label="取消文件传输"
                     >取消</button>
                   </div>
+                </div>
+              </section>
+              <section id="process-manager-panel" class="process-manager" role="tabpanel" aria-labelledby="process-manager-tab" tabindex="0" hidden>
+                <div class="process-table-wrap">
+                  <table class="process-table" aria-describedby="process-manager-status">
+                    <thead>
+                      <tr>
+                        <th scope="col" aria-sort="none"><button class="process-sort" type="button" data-process-sort="pid" data-i18n-zh="PID" data-i18n-en="PID">PID</button></th>
+                        <th scope="col" aria-sort="none"><button class="process-sort" type="button" data-process-sort="user" data-i18n-zh="用户" data-i18n-en="User">用户</button></th>
+                        <th scope="col" aria-sort="none"><button class="process-sort" type="button" data-process-sort="memoryBytes" data-i18n-zh="内存" data-i18n-en="Memory">内存</button></th>
+                        <th scope="col" aria-sort="none"><button class="process-sort" type="button" data-process-sort="memoryPercent" data-i18n-zh="MEM%" data-i18n-en="MEM%">MEM%</button></th>
+                        <th scope="col" aria-sort="descending"><button class="process-sort" type="button" data-process-sort="cpuPercent" data-i18n-zh="CPU%" data-i18n-en="CPU%">CPU%</button></th>
+                        <th scope="col" aria-sort="none"><button class="process-sort" type="button" data-process-sort="state" data-i18n-zh="状态" data-i18n-en="State">状态</button></th>
+                        <th scope="col" aria-sort="none"><button class="process-sort" type="button" data-process-sort="time" data-i18n-zh="时间" data-i18n-en="Time">时间</button></th>
+                        <th scope="col" data-i18n-zh="名称/命令行" data-i18n-en="Name / command">名称/命令行</th>
+                      </tr>
+                    </thead>
+                    <tbody id="process-table-body"></tbody>
+                  </table>
+                  <div id="process-manager-empty" class="process-manager-state" hidden data-i18n-zh="没有可显示的进程" data-i18n-en="No processes to display">没有可显示的进程</div>
+                  <div id="process-manager-error" class="process-manager-state error" role="alert" hidden></div>
+                </div>
+                <div class="process-statusbar">
+                  <span id="process-manager-status" role="status" aria-live="polite" data-i18n-zh="连接 SSH 后即可查看实时进程" data-i18n-en="Connect to SSH to view live processes">连接 SSH 后即可查看实时进程</span>
+                  <span><span data-i18n-zh="最后更新" data-i18n-en="Last update">最后更新</span> <strong id="process-updated">--</strong></span>
                 </div>
               </section>
               <div id="event-log" class="event-log" role="tabpanel" aria-labelledby="event-toggle" tabindex="0" hidden aria-live="polite"></div>

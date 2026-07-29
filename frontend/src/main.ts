@@ -7,6 +7,7 @@ import { decryptPasswordResult, encryptPassword, isEncryptedPassword } from './p
 import { resolveConnectionControl, resolveConnectionPanel } from './ui-state';
 import { classifyHostKey, SSH_FINGERPRINT_RE, type HostKeyPrompt } from './host-key';
 import { FileManager, collectFileManagerElements } from './file-manager';
+import { ProcessManager, collectProcessManagerElements } from './process-manager';
 import { resetTerminalForConnection } from './terminal-session';
 import './style.css';
 
@@ -292,6 +293,8 @@ const ui = {
   eventMessage: element<HTMLElement>('event-message'),
   fileManagerTab: element<HTMLButtonElement>('file-manager-tab'),
   fileManagerPanel: element<HTMLElement>('file-manager-panel'),
+  processManagerTab: element<HTMLButtonElement>('process-manager-tab'),
+  processManagerPanel: element<HTMLElement>('process-manager-panel'),
   eventToggle: element<HTMLButtonElement>('event-toggle'),
   eventLog: element<HTMLElement>('event-log'),
   toastRegion: element<HTMLElement>('toast-region'),
@@ -359,6 +362,7 @@ function applyLanguage(language: Language, persist = false): void {
     }
   }
   if (fileManager) fileManager.setLanguage();
+  if (processManager) processManager.setLanguage();
 
   if (persist) {
     try { localStorage.setItem(LANGUAGE_STORAGE_KEY, language); } catch { /* Language still applies for this page. */ }
@@ -398,6 +402,7 @@ const latestHistoryMutation = new Map<string, number>();
 const panelMedia = window.matchMedia('(max-width: 760px)');
 let panelOpen = !panelMedia.matches;
 let fileManager: FileManager;
+let processManager: ProcessManager;
 
 const terminal = new Terminal({
   allowProposedApi: false,
@@ -420,6 +425,11 @@ fileManager = new FileManager({
   elements: collectFileManagerElements(),
   getLanguage: () => currentLanguage,
   onError: (message) => event(message, 'sftp', true),
+});
+processManager = new ProcessManager({
+  elements: collectProcessManagerElements(),
+  getLanguage: () => currentLanguage,
+  onError: (message) => event(message, 'process', true),
 });
 
 function terminalTheme(): Record<string, string> {
@@ -1211,24 +1221,29 @@ function sendHostKeyDecision(accept: boolean): void {
     : bilingual('主机密钥已拒绝。', 'Host key rejected.'), 'host-key', !accept);
 }
 
-type WorkspaceTab = 'files' | 'log';
+type WorkspaceTab = 'files' | 'processes' | 'log';
 let activeWorkspaceTab: WorkspaceTab | null = null;
 
 function setWorkspaceTab(tab: WorkspaceTab | null, focus = false, rovingTab = tab ?? activeWorkspaceTab ?? 'files'): void {
   const filesActive = tab === 'files';
+  const processesActive = tab === 'processes';
   const logActive = tab === 'log';
   activeWorkspaceTab = tab;
   ui.terminalCard.classList.toggle('workspace-panel-open', tab !== null);
   ui.fileManagerPanel.hidden = !filesActive;
+  ui.processManagerPanel.hidden = !processesActive;
   ui.eventLog.hidden = !logActive;
   ui.fileManagerTab.setAttribute('aria-selected', String(filesActive));
+  ui.processManagerTab.setAttribute('aria-selected', String(processesActive));
   ui.eventToggle.setAttribute('aria-selected', String(logActive));
   ui.fileManagerTab.setAttribute('aria-expanded', String(filesActive));
+  ui.processManagerTab.setAttribute('aria-expanded', String(processesActive));
   ui.eventToggle.setAttribute('aria-expanded', String(logActive));
   ui.fileManagerTab.tabIndex = rovingTab === 'files' ? 0 : -1;
+  ui.processManagerTab.tabIndex = rovingTab === 'processes' ? 0 : -1;
   ui.eventToggle.tabIndex = rovingTab === 'log' ? 0 : -1;
   if (logActive) requestAnimationFrame(() => { ui.eventLog.scrollTop = ui.eventLog.scrollHeight; });
-  if (focus) (rovingTab === 'files' ? ui.fileManagerTab : ui.eventToggle).focus();
+  if (focus) ({ files: ui.fileManagerTab, processes: ui.processManagerTab, log: ui.eventToggle })[rovingTab].focus();
   requestAnimationFrame(() => fitTerminal(true));
 }
 
@@ -1239,8 +1254,12 @@ function toggleWorkspaceTab(tab: WorkspaceTab): void {
 function handleWorkspaceTabKey(event: KeyboardEvent): void {
   if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
   event.preventDefault();
-  const files = event.key === 'Home' || (event.key !== 'End' && event.currentTarget === ui.eventToggle);
-  setWorkspaceTab(files ? 'files' : 'log', true);
+  const tabs: WorkspaceTab[] = ['files', 'processes', 'log'];
+  const current = tabs.findIndex((tab) => ({ files: ui.fileManagerTab, processes: ui.processManagerTab, log: ui.eventToggle })[tab] === event.currentTarget);
+  const next = event.key === 'Home' ? 0
+    : event.key === 'End' ? tabs.length - 1
+      : (current + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+  setWorkspaceTab(tabs[next], true);
 }
 
 function configureHostKeyDialog(hostKey: HostKeyPrompt): void {
@@ -1293,6 +1312,20 @@ function handleServerMessage(message: ServerMessage): void {
       return;
     }
     event(bilingual('文件管理通道已可用。', 'File management channel is available.'), 'sftp');
+    return;
+  }
+  if (type === 'process_attach') {
+    if (typeof message.url !== 'string' || !message.url.startsWith('/api/processes?')) {
+      event(bilingual('收到无效的进程监控连接信息。', 'Received invalid process-monitor connection details.'), 'protocol', true);
+      return;
+    }
+    try {
+      processManager.attach(message.url);
+    } catch {
+      event(bilingual('无法打开进程监控连接。', 'Could not open the process-monitor connection.'), 'process', true);
+      return;
+    }
+    event(bilingual('进程监控通道已可用。', 'Process monitor channel is available.'), 'process');
     return;
   }
   if (type === 'pong') {
@@ -1415,6 +1448,7 @@ function failActiveConnection(activeSocket: WebSocket | null, closeReason: strin
   currentRememberedFingerprint = '';
   stopTimers();
   fileManager.reset();
+  processManager.reset();
   clearHostKeyPrompt();
   invalidateHistoryPasswordLoad();
   currentSessionSubtitle = displayReason;
@@ -1557,6 +1591,7 @@ async function connect(): Promise<void> {
       currentRememberedFingerprint = '';
       stopTimers();
       fileManager.reset();
+      processManager.reset();
       clearHostKeyPrompt();
       invalidateHistoryPasswordLoad();
       const wasActive = connectionState === 'connected';
@@ -1600,6 +1635,7 @@ function disconnect(reason = bilingual('已由用户断开连接', 'Disconnected
   socket = null;
   stopTimers();
   fileManager.reset();
+  processManager.reset();
   clearHostKeyPrompt();
   invalidateHistoryPasswordLoad();
   currentExpectedFingerprint = '';
@@ -1858,8 +1894,10 @@ ui.fullscreenTerminal.addEventListener('click', async () => {
 });
 document.addEventListener('fullscreenchange', () => fitTerminal(true));
 ui.fileManagerTab.addEventListener('click', () => toggleWorkspaceTab('files'));
+ui.processManagerTab.addEventListener('click', () => toggleWorkspaceTab('processes'));
 ui.eventToggle.addEventListener('click', () => toggleWorkspaceTab('log'));
 ui.fileManagerTab.addEventListener('keydown', handleWorkspaceTabKey);
+ui.processManagerTab.addEventListener('keydown', handleWorkspaceTabKey);
 ui.eventToggle.addEventListener('keydown', handleWorkspaceTabKey);
 ui.languageToggle.addEventListener('click', () => {
   applyLanguage(currentLanguage === 'zh-CN' ? 'en' : 'zh-CN', true);
@@ -1884,6 +1922,7 @@ terminal.onData(sendTerminalData);
 new ResizeObserver(() => fitTerminal(true)).observe(ui.terminalStage);
 window.addEventListener('beforeunload', () => {
   fileManager.reset();
+  processManager.reset();
   socket?.close(1000, 'Page closed');
 });
 document.addEventListener('keydown', (keyEvent) => {
