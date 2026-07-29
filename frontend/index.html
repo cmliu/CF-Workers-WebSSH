@@ -263,31 +263,36 @@
                     <span id="session-subtitle">选择目标并连接</span>
                   </div>
                 </div>
+                <div class="resource-metrics" aria-label="系统资源" data-i18n-aria-label-zh="系统资源" data-i18n-aria-label-en="System resources">
+                  <div class="resource-metric resource-cpu">
+                    <div class="resource-metric-line">
+                      <span data-i18n-zh="CPU" data-i18n-en="CPU">CPU</span>
+                      <strong id="resource-cpu-value" class="resource-percentage">--</strong>
+                      <strong id="resource-cpu-load" class="resource-detail">-- / -- / --</strong>
+                    </div>
+                    <progress id="resource-cpu-progress" max="100" value="0" aria-label="CPU 使用率" data-i18n-aria-label-zh="CPU 使用率" data-i18n-aria-label-en="CPU usage"></progress>
+                  </div>
+                  <div class="resource-metric resource-memory">
+                    <div class="resource-metric-line">
+                      <span data-i18n-zh="内存" data-i18n-en="MEM">内存</span>
+                      <strong id="resource-memory-value" class="resource-percentage">--</strong>
+                      <strong id="resource-memory-amount" class="resource-detail">--/--</strong>
+                    </div>
+                    <progress id="resource-memory-progress" max="100" value="0" aria-label="内存使用率" data-i18n-aria-label-zh="内存使用率" data-i18n-aria-label-en="Memory usage"></progress>
+                  </div>
+                  <div class="resource-metric resource-swap">
+                    <div class="resource-metric-line">
+                      <span data-i18n-zh="Swap" data-i18n-en="SWAP">Swap</span>
+                      <strong id="resource-swap-value" class="resource-percentage">--</strong>
+                      <strong id="resource-swap-amount" class="resource-detail">--/--</strong>
+                    </div>
+                    <progress id="resource-swap-progress" max="100" value="0" aria-label="Swap 使用率" data-i18n-aria-label-zh="Swap 使用率" data-i18n-aria-label-en="Swap usage"></progress>
+                  </div>
+                </div>
                 <div class="session-metrics">
                   <div><span data-i18n-zh="延迟" data-i18n-en="RTT">延迟</span><strong id="metric-rtt">--</strong></div>
                   <div><span data-i18n-zh="时长" data-i18n-en="UPTIME">时长</span><strong id="metric-uptime">00:00</strong></div>
                   <div><span data-i18n-zh="主机密钥" data-i18n-en="HOST KEY">主机密钥</span><strong id="metric-host-key">--</strong></div>
-                </div>
-                <div class="resource-metrics" aria-label="系统资源" data-i18n-aria-label-zh="系统资源" data-i18n-aria-label-en="System resources">
-                  <div class="resource-metric resource-cpu">
-                    <span data-i18n-zh="CPU" data-i18n-en="CPU">CPU</span>
-                    <strong id="resource-cpu-value">--</strong>
-                    <progress id="resource-cpu-progress" max="100" value="0" aria-label="CPU 使用率" data-i18n-aria-label-zh="CPU 使用率" data-i18n-aria-label-en="CPU usage"></progress>
-                  </div>
-                  <div class="resource-metric resource-load">
-                    <span data-i18n-zh="负载" data-i18n-en="LOAD">负载</span>
-                    <strong id="resource-load-value">--</strong>
-                  </div>
-                  <div class="resource-metric resource-memory">
-                    <span data-i18n-zh="内存" data-i18n-en="MEM">内存</span>
-                    <strong id="resource-memory-value">--</strong>
-                    <progress id="resource-memory-progress" max="100" value="0" aria-label="内存使用率" data-i18n-aria-label-zh="内存使用率" data-i18n-aria-label-en="Memory usage"></progress>
-                  </div>
-                  <div class="resource-metric resource-swap">
-                    <span data-i18n-zh="Swap" data-i18n-en="SWAP">Swap</span>
-                    <strong id="resource-swap-value">--</strong>
-                    <progress id="resource-swap-progress" max="100" value="0" aria-label="Swap 使用率" data-i18n-aria-label-zh="Swap 使用率" data-i18n-aria-label-en="Swap usage"></progress>
-                  </div>
                 </div>
                 <div class="terminal-actions">
                   <button id="clear-terminal" class="toolbar-button" type="button" aria-label="清屏" data-i18n-aria-label-zh="清屏" data-i18n-aria-label-en="Clear">

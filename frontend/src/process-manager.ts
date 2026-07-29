@@ -7,10 +7,12 @@ export interface ProcessManagerElements {
   updated: HTMLElement;
   cpuValue: HTMLElement;
   cpuProgress: HTMLProgressElement;
-  loadValue: HTMLElement;
+  cpuLoad: HTMLElement;
   memoryValue: HTMLElement;
+  memoryAmount: HTMLElement;
   memoryProgress: HTMLProgressElement;
   swapValue: HTMLElement;
+  swapAmount: HTMLElement;
   swapProgress: HTMLProgressElement;
 }
 
@@ -108,6 +110,24 @@ function formatBytes(bytes: number | null): string {
   return `${value.toFixed(precision)}${units[unit]}`;
 }
 
+function usageColor(percent: number): string {
+  const value = Math.min(100, Math.max(0, percent));
+  const stops = [
+    { value: 0, hue: 150 },
+    { value: 50, hue: 125 },
+    { value: 65, hue: 55 },
+    { value: 80, hue: 30 },
+    { value: 100, hue: 0 },
+  ];
+  const upperIndex = stops.findIndex((stop) => value <= stop.value);
+  if (upperIndex <= 0) return `hsl(${stops[0].hue} 82% 58%)`;
+  const lower = stops[upperIndex - 1];
+  const upper = stops[upperIndex];
+  const position = (value - lower.value) / (upper.value - lower.value);
+  const hue = lower.hue + ((upper.hue - lower.hue) * position);
+  return `hsl(${hue.toFixed(1)} 82% 58%)`;
+}
+
 export class ProcessManager {
   private readonly elements: ProcessManagerElements;
   private readonly getLanguage: () => 'zh-CN' | 'en';
@@ -190,9 +210,9 @@ export class ProcessManager {
       this.elements.error.hidden = true;
       this.elements.updated.textContent = '--';
       this.resetMetric(this.elements.cpuValue, this.elements.cpuProgress);
-      this.elements.loadValue.textContent = '--';
-      this.resetMetric(this.elements.memoryValue, this.elements.memoryProgress);
-      this.resetMetric(this.elements.swapValue, this.elements.swapProgress);
+      this.elements.cpuLoad.textContent = '-- / -- / --';
+      this.resetUsage(this.elements.memoryValue, this.elements.memoryAmount, this.elements.memoryProgress);
+      this.resetUsage(this.elements.swapValue, this.elements.swapAmount, this.elements.swapProgress);
       this.setStatus('连接 SSH 后即可查看实时进程', 'Connect to SSH to view live processes');
       return;
     }
@@ -228,27 +248,43 @@ export class ProcessManager {
       `${snapshot.processes.length} processes · Updated ${updated}`,
     );
     this.setMetric(this.elements.cpuValue, this.elements.cpuProgress, snapshot.metrics.cpuPercent);
-    this.elements.loadValue.textContent = snapshot.metrics.loadAverage?.map((value) => value.toFixed(2)).join(' / ') ?? '--';
-    this.setUsage(this.elements.memoryValue, this.elements.memoryProgress, snapshot.metrics.memory);
-    this.setUsage(this.elements.swapValue, this.elements.swapProgress, snapshot.metrics.swap);
+    this.elements.cpuLoad.textContent = snapshot.metrics.loadAverage?.map((value) => value.toFixed(2)).join(' / ') ?? '-- / -- / --';
+    this.setUsage(this.elements.memoryValue, this.elements.memoryAmount, this.elements.memoryProgress, snapshot.metrics.memory);
+    this.setUsage(this.elements.swapValue, this.elements.swapAmount, this.elements.swapProgress, snapshot.metrics.swap);
   }
 
   private setMetric(valueElement: HTMLElement, progress: HTMLProgressElement, value: number | null): void {
     valueElement.textContent = formatPercent(value);
     progress.value = value === null ? 0 : Math.min(100, value);
+    if (value === null) {
+      valueElement.style.removeProperty('--usage-color');
+      progress.style.removeProperty('--usage-color');
+      return;
+    }
+    const color = usageColor(value);
+    valueElement.style.setProperty('--usage-color', color);
+    progress.style.setProperty('--usage-color', color);
   }
 
   private resetMetric(valueElement: HTMLElement, progress: HTMLProgressElement): void {
     valueElement.textContent = '--';
     progress.value = 0;
+    valueElement.style.removeProperty('--usage-color');
+    progress.style.removeProperty('--usage-color');
   }
 
-  private setUsage(valueElement: HTMLElement, progress: HTMLProgressElement, usage: ResourceUsage | null): void {
+  private resetUsage(valueElement: HTMLElement, amountElement: HTMLElement, progress: HTMLProgressElement): void {
+    this.resetMetric(valueElement, progress);
+    amountElement.textContent = '--/--';
+  }
+
+  private setUsage(valueElement: HTMLElement, amountElement: HTMLElement, progress: HTMLProgressElement, usage: ResourceUsage | null): void {
     if (!usage) {
-      this.resetMetric(valueElement, progress);
+      this.resetUsage(valueElement, amountElement, progress);
       return;
     }
-    valueElement.textContent = `${formatPercent(usage.percent)} ${formatBytes(usage.usedBytes)}/${formatBytes(usage.totalBytes)}`;
+    valueElement.textContent = formatPercent(usage.percent);
+    amountElement.textContent = `${formatBytes(usage.usedBytes)}/${formatBytes(usage.totalBytes)}`;
     progress.value = usage.percent;
   }
 
@@ -295,10 +331,12 @@ export function collectProcessManagerElements(): ProcessManagerElements {
     updated: getElement('process-updated'),
     cpuValue: getElement('resource-cpu-value'),
     cpuProgress: getElement('resource-cpu-progress'),
-    loadValue: getElement('resource-load-value'),
+    cpuLoad: getElement('resource-cpu-load'),
     memoryValue: getElement('resource-memory-value'),
+    memoryAmount: getElement('resource-memory-amount'),
     memoryProgress: getElement('resource-memory-progress'),
     swapValue: getElement('resource-swap-value'),
+    swapAmount: getElement('resource-swap-amount'),
     swapProgress: getElement('resource-swap-progress'),
   };
 }
