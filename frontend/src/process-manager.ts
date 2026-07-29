@@ -135,6 +135,7 @@ export class ProcessManager {
   private socket: WebSocket | null = null;
   private generation = 0;
   private snapshot: ProcessSnapshot | null = null;
+  private readonly progressAnimations = new Map<HTMLProgressElement, number>();
 
   constructor(options: ProcessManagerOptions) {
     this.elements = options.elements;
@@ -255,12 +256,13 @@ export class ProcessManager {
 
   private setMetric(valueElement: HTMLElement, progress: HTMLProgressElement, value: number | null): void {
     valueElement.textContent = formatPercent(value);
-    progress.value = value === null ? 0 : Math.min(100, value);
     if (value === null) {
+      this.resetProgress(progress);
       valueElement.style.removeProperty('--usage-color');
       progress.style.removeProperty('--usage-color');
       return;
     }
+    this.animateProgress(progress, Math.min(100, value));
     const color = usageColor(value);
     valueElement.style.setProperty('--usage-color', color);
     progress.style.setProperty('--usage-color', color);
@@ -268,9 +270,40 @@ export class ProcessManager {
 
   private resetMetric(valueElement: HTMLElement, progress: HTMLProgressElement): void {
     valueElement.textContent = '--';
-    progress.value = 0;
+    this.resetProgress(progress);
     valueElement.style.removeProperty('--usage-color');
     progress.style.removeProperty('--usage-color');
+  }
+
+  private resetProgress(progress: HTMLProgressElement): void {
+    const animation = this.progressAnimations.get(progress);
+    if (animation !== undefined) cancelAnimationFrame(animation);
+    this.progressAnimations.delete(progress);
+    progress.value = 0;
+  }
+
+  private animateProgress(progress: HTMLProgressElement, target: number): void {
+    const previousAnimation = this.progressAnimations.get(progress);
+    if (previousAnimation !== undefined) cancelAnimationFrame(previousAnimation);
+    const startValue = progress.value;
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches || Math.abs(target - startValue) < 0.1) {
+      progress.value = target;
+      this.progressAnimations.delete(progress);
+      return;
+    }
+    const startedAt = performance.now();
+    const duration = 520;
+    const step = (now: number): void => {
+      const elapsed = Math.min(1, (now - startedAt) / duration);
+      const eased = 1 - ((1 - elapsed) ** 3);
+      progress.value = startValue + ((target - startValue) * eased);
+      if (elapsed < 1) {
+        this.progressAnimations.set(progress, requestAnimationFrame(step));
+      } else {
+        this.progressAnimations.delete(progress);
+      }
+    };
+    this.progressAnimations.set(progress, requestAnimationFrame(step));
   }
 
   private resetUsage(valueElement: HTMLElement, amountElement: HTMLElement, progress: HTMLProgressElement): void {
@@ -283,9 +316,8 @@ export class ProcessManager {
       this.resetUsage(valueElement, amountElement, progress);
       return;
     }
-    valueElement.textContent = formatPercent(usage.percent);
+    this.setMetric(valueElement, progress, usage.percent);
     amountElement.textContent = `${formatBytes(usage.usedBytes)}/${formatBytes(usage.totalBytes)}`;
-    progress.value = usage.percent;
   }
 
   private setStatus(zh: string, en: string): void {

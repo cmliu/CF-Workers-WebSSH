@@ -1037,13 +1037,13 @@ button:disabled {
 .resource-metric progress::-webkit-progress-value {
   border-radius: 99px;
   background: var(--usage-color, var(--accent));
-  transition: background-color 220ms ease;
+  transition: background-color 320ms ease;
 }
 
 .resource-metric progress::-moz-progress-bar {
   border-radius: 99px;
   background: var(--usage-color, var(--accent));
-  transition: background-color 220ms ease;
+  transition: background-color 320ms ease;
 }
 
 .session-metrics span {
