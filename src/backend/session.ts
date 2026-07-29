@@ -72,7 +72,19 @@ const PROCESS_CHANNEL_OPEN_TIMEOUT_MS = 15_000;
 const PROCESS_MAX_BUFFER_BYTES = 2 * 1024 * 1024;
 const PROCESS_SNAPSHOT_MARKER = '__CF_WEBSSH_TOP_SNAPSHOT__';
 // Octal escapes keep the delimiter itself out of the command line shown by top.
-const PROCESS_MONITOR_COMMAND = "LC_ALL=C LANG=C sh -c 'while :; do printf \"\\137\\137CF_WEBSSH_TOP_SNAPSHOT\\137\\137\\n\"; top -b -n 1 -w 512 2>/dev/null || top -b -n 1 2>/dev/null || exit 127; sleep 2; done'";
+// `top` flags differ across platforms: Linux procps uses `-n 1` (1 iteration) + `-c` (full command line),
+// but on FreeBSD `-n 1` means "show 1 process" and `-w` is unsupported — so the previous
+// Linux-only fallback chain silently truncated FreeBSD output to a single process row.
+// `-c` is required on Linux/macOS because their top defaults to showing just the program name;
+// FreeBSD top shows the full command line by default.
+// Width handling: without a tty, top (both procps and busybox) defaults to a narrow width and
+// truncates long command lines with a '+' marker. procps supports `-w 0` (unlimited); busybox
+// rejects `-w` and falls back to the plain form, but honors the COLUMNS env var — so we export
+// COLUMNS=4096 and use a fallback chain on Linux to cover both implementations.
+//   Linux:    top -b -c -n 1 -w 0  ||  top -b -c -n 1  ||  top -b -n 1
+//   FreeBSD:  top -b -a -d 1            (batch, all processes, 1 iteration)
+//   macOS:    top -l 1 -c -n 0 -s 0     (1 log sample, full command line, all processes, no delay)
+const PROCESS_MONITOR_COMMAND = "LC_ALL=C LANG=C sh -c 'os=$(uname -s 2>/dev/null || echo Linux); export COLUMNS=4096; while :; do printf \"\\137\\137CF_WEBSSH_TOP_SNAPSHOT\\137\\137\\n\"; case \"$os\" in FreeBSD) top -b -a -d 1 2>/dev/null || exit 127;; Darwin) top -l 1 -c -n 0 -s 0 2>/dev/null || exit 127;; *) top -b -c -n 1 -w 0 2>/dev/null || top -b -c -n 1 2>/dev/null || top -b -n 1 2>/dev/null || exit 127;; esac; sleep 2; done'";
 const KEEPALIVE_NAME = new TextEncoder().encode('keepalive@openssh.com');
 
 export class SSHSession {

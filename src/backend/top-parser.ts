@@ -31,10 +31,22 @@ export interface ProcessSnapshot {
 const ANSI_ESCAPE_RE = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))/g;
 const MAX_PROCESSES = 512;
 
-function finiteNumber(value: string | undefined): number | null {
+// Matches a single numeric token that may use ',' or '.' as decimal separator.
+const NUMBER_TOKEN_RE = /\d+(?:[.,]\d+)?/;
+
+function finiteNumber(value: string | undefined | null): number | null {
   if (!value) return null;
   const parsed = Number(value.replace(',', '.').replace(/%$/, ''));
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
+// Parses "10,23" / "10.23" / "10" -> number. Returns null on invalid input.
+function parseDecimal(token: string | undefined | null): number | null {
+  if (!token) return null;
+  if (!NUMBER_TOKEN_RE.test(token)) return null;
+  // Ensure the whole token is a number (e.g. reject "10abc").
+  if (!/^\d+(?:[.,]\d+)?$/.test(token)) return null;
+  return Number(token.replace(',', '.'));
 }
 
 function clampPercent(value: number): number {
@@ -43,9 +55,13 @@ function clampPercent(value: number): number {
 
 function parseLoad(lines: string[]): [number, number, number] | null {
   for (const line of lines) {
-    const match = line.match(/load average:\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)/i);
-    if (!match) continue;
-    const values = match.slice(1, 4).map((value) => finiteNumber(value));
+    // Linux: "load average: 10.23, 11.92, 12.63"
+    // FreeBSD: "load averages: 10,23, 11,92, 12,63"
+    const prefix = line.match(/load averages?\s*:\s*(.+)/i);
+    if (!prefix) continue;
+    const tokens = prefix[1].match(/\d+(?:[.,]\d+)?/g);
+    if (!tokens || tokens.length < 3) continue;
+    const values = tokens.slice(0, 3).map(parseDecimal);
     if (values.every((value): value is number => value !== null)) return values as [number, number, number];
   }
   return null;
@@ -53,50 +69,148 @@ function parseLoad(lines: string[]): [number, number, number] | null {
 
 function parseCPU(lines: string[]): number | null {
   for (const line of lines) {
-    if (!/(?:^|\s)(?:%?Cpu\(s\)|CPU):/i.test(line)) continue;
-    const idle = line.match(/([\d.]+)\s*%?\s*(?:id|idle)\b/i);
-    const idlePercent = finiteNumber(idle?.[1]);
+    // Linux: "%Cpu(s): 13.1 us, 0.7 sy, 6.4 ni, 79.6 id, ..."
+    // FreeBSD: "CPU: 13,1% user, 0,7% nice, 6,4% system, 0,1% interrupt, 79,6% idle"
+    // macOS: "CPU usage: 13% user, 6% sys, 79% idle"
+    if (!/(?:^|\s)(?:%?Cpu\(s\)|CPU(?:\s+usage)?|%CPU)\s*:/i.test(line)) continue;
+    const idle = line.match(/([\d.,]+)\s*%?\s*(?:id|idle)\b/i);
+    const idlePercent = parseDecimal(idle?.[1]);
     if (idlePercent !== null) return clampPercent(100 - idlePercent);
+    // Fallback: sum user + sys (macOS sometimes omits idle).
+    const user = line.match(/([\d.,]+)\s*%?\s*(?:us(?:er)?|user)\b/i);
+    const sys = line.match(/([\d.,]+)\s*%?\s*(?:sy(?:s|stem)?|system)\b/i);
+    const userVal = parseDecimal(user?.[1]);
+    const sysVal = parseDecimal(sys?.[1]);
+    if (userVal !== null && sysVal !== null) return clampPercent(userVal + sysVal);
   }
   return null;
 }
 
 function unitMultiplier(label: string | undefined): number {
   const unit = label?.toLowerCase() ?? '';
+  if (unit.startsWith('t')) return 1024 ** 4;
   if (unit.startsWith('g')) return 1024 ** 3;
   if (unit.startsWith('m')) return 1024 ** 2;
   if (unit.startsWith('k')) return 1024;
   return 1;
 }
 
+// Parses "24G" / "3196K" / "5120M" / "10" -> bytes. Suffix is a single letter (k/m/g/t).
+function parseSizeToken(token: string): number | null {
+  const match = token.match(/^([\d.,]+)\s*([kmgtpe]?)$/i);
+  if (!match) return null;
+  const value = parseDecimal(match[1]);
+  if (value === null) return null;
+  const suffix = match[2].toLowerCase();
+  const power = suffix ? 'kmgtpe'.indexOf(suffix) + 1 : 0;
+  return Math.round(value * (1024 ** power));
+}
+
 function parseUsage(lines: string[], kind: 'Mem' | 'Swap'): ResourceUsage | null {
   for (const line of lines) {
+    // macOS PhysMem (only valid for Mem).
+    if (kind === 'Mem' && /^\s*PhysMem\s*:/i.test(line)) {
+      const result = parseMacOSPhysMem(line);
+      if (result) return result;
+      continue;
+    }
     if (!new RegExp(`(?:^|\\s)(?:KiB|MiB|GiB)?\\s*${kind}\\s*:`, 'i').test(line)) continue;
-    const unit = line.match(/(?:^|\s)(KiB|MiB|GiB)\s*(?:Mem|Swap)\s*:/i)?.[1];
-    const multiplier = unitMultiplier(unit ?? 'KiB');
-    const amount = (label: 'total' | 'used' | 'free'): number | null => {
-      const match = line.match(new RegExp(`([\\d.]+)\\s*([kmgt]?)\\s+${label}\\b`, 'i'));
-      const value = finiteNumber(match?.[1]);
-      return value === null ? null : value * (match?.[2] ? unitMultiplier(match[2]) : multiplier);
-    };
-    const total = amount('total');
-    const used = amount('used');
-    const free = amount('free');
-    const resolvedTotal = total ?? (used !== null && free !== null ? used + free : null);
-    if (resolvedTotal === null || used === null || resolvedTotal < 0) continue;
-    const totalBytes = Math.round(resolvedTotal);
-    const usedBytes = Math.min(totalBytes, Math.round(used));
-    return {
-      usedBytes,
-      totalBytes,
-      percent: totalBytes > 0 ? clampPercent((usedBytes / totalBytes) * 100) : 0,
-    };
+
+    // Try the explicit total/used/free labelled form first (Linux + FreeBSD Swap).
+    const labelled = parseLabelledUsage(line);
+    if (labelled) return labelled;
+
+    // Then the FreeBSD category form: "Mem: 24G Active, 22G Inact, 18G Laundry, 51G Wired, 10G Free".
+    if (kind === 'Mem') {
+      const categorised = parseFreeBSDMemUsage(line);
+      if (categorised) return categorised;
+    }
   }
   return null;
 }
 
+// Handles "X total, Y used, Z free" style lines (Linux, FreeBSD Swap).
+function parseLabelledUsage(line: string): ResourceUsage | null {
+  const unit = line.match(/(?:^|\s)(KiB|MiB|GiB)\s*(?:Mem|Swap)\s*:/i)?.[1];
+  const defaultMultiplier = unit ? unitMultiplier(unit) : 1;
+
+  const amount = (label: string): number | null => {
+    const match = line.match(new RegExp(`([\\d.,]+)\\s*([kmgtpe]i?b?|[kmgtpe]?)\\s+${label}\\b`, 'i'));
+    if (!match) return null;
+    const value = parseDecimal(match[1]);
+    if (value === null) return null;
+    const suffix = match[2];
+    const mult = suffix ? unitMultiplier(suffix) : defaultMultiplier;
+    return value * mult;
+  };
+
+  const total = amount('total');
+  const used = amount('used');
+  const free = amount('free');
+  const resolvedTotal = total ?? (used !== null && free !== null ? used + free : null);
+  if (resolvedTotal === null || used === null || resolvedTotal < 0) return null;
+  const totalBytes = Math.round(resolvedTotal);
+  const usedBytes = Math.min(totalBytes, Math.round(used));
+  return {
+    usedBytes,
+    totalBytes,
+    percent: totalBytes > 0 ? clampPercent((usedBytes / totalBytes) * 100) : 0,
+  };
+}
+
+// Handles FreeBSD Mem: "24G Active, 22G Inact, 18G Laundry, 51G Wired, 10G Free".
+// total = sum of all listed categories; used = total - free.
+function parseFreeBSDMemUsage(line: string): ResourceUsage | null {
+  const memLabels = new Set(['active', 'inact', 'laundry', 'wired', 'buf', 'cache', 'free', 'laund']);
+  // Match "<number><optional unit> <Label>" pairs (e.g. "24G Active", "10G Free"). Case-insensitive so uppercase
+  // unit letters (G/M/K) match the [kmgtpe] class.
+  const tokenRegex = /([\d.,]+)\s*([kmgtpe]?)\s+([A-Za-z][\w-]*)/gi;
+  const entries: { size: number; label: string }[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = tokenRegex.exec(line)) !== null) {
+    const size = parseSizeToken(match[1] + (match[2] || ''));
+    if (size === null) continue;
+    const label = match[3].toLowerCase();
+    if (!memLabels.has(label)) continue;
+    entries.push({ size, label });
+  }
+  if (entries.length === 0) return null;
+
+  const freeEntry = entries.find((e) => e.label === 'free');
+  const totalBytes = Math.round(entries.reduce((sum, e) => sum + e.size, 0));
+  if (totalBytes <= 0) return null;
+  const usedBytes = Math.max(0, totalBytes - (freeEntry?.size ?? 0));
+  return {
+    usedBytes,
+    totalBytes,
+    percent: clampPercent((usedBytes / totalBytes) * 100),
+  };
+}
+
+// macOS: "PhysMem: 100G used (24G wired), 10G unused." or "PhysMem: 110G used, 10G unused."
+function parseMacOSPhysMem(line: string): ResourceUsage | null {
+  const usedMatch = line.match(/([\d.,]+)\s*([kmgtpe]?)\s*used/i);
+  const unusedMatch = line.match(/([\d.,]+)\s*([kmgtpe]?)\s*(?:unused|free)/i);
+  if (!usedMatch) return null;
+  const used = parseSizeToken(usedMatch[1] + (usedMatch[2] || ''));
+  if (used === null) return null;
+  let total: number;
+  if (unusedMatch) {
+    const unused = parseSizeToken(unusedMatch[1] + (unusedMatch[2] || ''));
+    total = used + (unused ?? 0);
+  } else {
+    total = used;
+  }
+  return {
+    usedBytes: used,
+    totalBytes: total,
+    percent: total > 0 ? clampPercent((used / total) * 100) : 0,
+  };
+}
+
 function headerIndex(headers: string[], ...names: string[]): number {
-  return headers.findIndex((header) => names.includes(header.toUpperCase()));
+  const upperNames = names.map((n) => n.toUpperCase());
+  return headers.findIndex((header) => upperNames.includes(header.toUpperCase()));
 }
 
 function parseMemoryValue(value: string | undefined): number | null {
@@ -110,19 +224,29 @@ function parseMemoryValue(value: string | undefined): number | null {
 }
 
 function parseProcesses(lines: string[]): ProcessEntry[] {
-  const headerLineIndex = lines.findIndex((line) => /^\s*PID\s+/i.test(line) && /(?:^|\s)%?CPU(?:\s|$)/i.test(line));
+  // Header line starts with PID. Both Linux ("%CPU") and FreeBSD ("WCPU") headers match this.
+  const headerLineIndex = lines.findIndex((line) => /^\s*PID\s+/i.test(line));
   if (headerLineIndex < 0) return [];
   const headers = lines[headerLineIndex].trim().split(/\s+/);
   const pidIndex = headerIndex(headers, 'PID');
   const userIndex = headerIndex(headers, 'USER', 'USERNAME');
-  const cpuIndex = headerIndex(headers, '%CPU', 'CPU%');
+  // Linux: %CPU, macOS: %CPU, FreeBSD: WCPU
+  const cpuIndex = headerIndex(headers, '%CPU', 'CPU%', 'WCPU');
   const residentMemoryIndex = headerIndex(headers, 'RES', 'RSS');
-  const memoryIndex = residentMemoryIndex >= 0 ? residentMemoryIndex : headerIndex(headers, 'VSZ', 'VIRT');
+  const memoryIndex = residentMemoryIndex >= 0 ? residentMemoryIndex : headerIndex(headers, 'VSZ', 'VIRT', 'SIZE');
   const memoryPercentIndex = headerIndex(headers, '%MEM', 'MEM%', '%VSZ');
   const stateIndex = headerIndex(headers, 'S', 'STAT', 'STATE');
   const timeIndex = headerIndex(headers, 'TIME+', 'TIME');
   const commandIndex = headerIndex(headers, 'COMMAND', 'CMD', 'COMMAND+');
   if (pidIndex < 0 || commandIndex < 0) return [];
+
+  // Determine the last column index we care about (excluding COMMAND itself). When COMMAND is the
+  // final column (Linux/FreeBSD), the rest of the line is the full command line. When COMMAND is
+  // in the middle (macOS: "PID COMMAND %CPU TIME"), only the single token is the command name.
+  const knownIndices = [pidIndex, userIndex, memoryIndex, memoryPercentIndex, cpuIndex, stateIndex, timeIndex]
+    .filter((i) => i >= 0);
+  const maxKnownIndex = knownIndices.length > 0 ? Math.max(...knownIndices) : -1;
+  const commandIsLast = commandIndex > maxKnownIndex;
 
   const processes: ProcessEntry[] = [];
   for (const line of lines.slice(headerLineIndex + 1)) {
@@ -138,7 +262,7 @@ function parseProcesses(lines: string[]): ProcessEntry[] {
       cpuPercent: cpuIndex >= 0 ? finiteNumber(fields[cpuIndex]) : null,
       state: stateIndex >= 0 ? fields[stateIndex] ?? '' : '',
       time: timeIndex >= 0 ? fields[timeIndex] ?? '' : '',
-      command: fields.slice(commandIndex).join(' '),
+      command: commandIsLast ? fields.slice(commandIndex).join(' ') : (fields[commandIndex] ?? ''),
     });
     if (processes.length >= MAX_PROCESSES) break;
   }
