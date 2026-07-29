@@ -948,12 +948,12 @@ button:disabled {
   display: flex;
   flex: 0 0 auto;
   align-items: center;
-  gap: 4px;
+  gap: 0px;
 }
 
 .session-metrics > div {
-  min-width: 82px;
-  padding: 0 10px;
+  min-width: 64px;
+  padding: 0 7px;
   border-left: 1px solid #1c2932;
 }
 
@@ -979,6 +979,11 @@ button:disabled {
   font-family: var(--mono);
   font-size: 10px;
   white-space: nowrap;
+}
+
+.resource-metric + .resource-metric {
+  padding-left: 9px;
+  border-left: 1px solid #1c2932;
 }
 
 .resource-metric-line {
@@ -1963,8 +1968,8 @@ button:disabled {
   }
 
   .session-metrics > div {
-    min-width: 72px;
-    padding: 0 7px;
+    min-width: 58px;
+    padding: 0 5px;
   }
 
   .session-metrics > div:first-child {
