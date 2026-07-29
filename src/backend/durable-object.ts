@@ -130,7 +130,11 @@ export class SSHSessionDO implements DurableObject {
       if (config.port === 25) throw new Error('Cloudflare Workers cannot connect to outbound TCP port 25');
       const verifiedAddresses = await assertPublicTarget(config.host);
       this.assertConnectionActive(ws, pending);
-      ws.send(JSON.stringify({ type: 'status', event: 'tcp_connecting', message: `Connecting to ${config.host}:${config.port}` }));
+      ws.send(JSON.stringify({
+        type: 'status',
+        event: 'tcp_connecting',
+        message: `Connecting to ${toSocketHostname(config.host)}:${config.port}`,
+      }));
 
       // Connect to the exact address that passed SSRF validation. Keeping the
       // original hostname only for host-key pinning prevents DNS rebinding.

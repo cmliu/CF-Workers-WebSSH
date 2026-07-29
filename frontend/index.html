@@ -43,10 +43,6 @@
         </div>
 
         <div class="topbar-actions">
-          <div id="global-status" class="status-pill" data-state="idle" role="status" aria-live="polite">
-            <span class="status-dot"></span>
-            <span id="global-status-label">离线</span>
-          </div>
           <button id="language-toggle" class="icon-button" type="button" aria-label="切换到英文" title="切换到英文" data-language="zh-CN">
             <span class="language-icon" aria-hidden="true"><span>中</span><span>E</span></span>
           </button>
@@ -248,7 +244,7 @@
                   data-i18n-aria-label-zh="实时连接状态"
                   data-i18n-aria-label-en="Live connection status"
                 >
-                  <span class="live-orb" id="live-orb"></span>
+                  <span class="live-orb idle" id="live-orb" role="status" aria-live="polite" aria-label="离线" title="离线"></span>
                   <div>
                     <strong id="session-title">无活动会话</strong>
                     <span id="session-subtitle">选择目标并连接</span>
@@ -297,9 +293,10 @@
                     aria-controls="file-manager-panel"
                     aria-expanded="false"
                     tabindex="0"
-                    data-i18n-zh="文件管理"
-                    data-i18n-en="Files"
-                  >文件管理</button>
+                  >
+                    <svg class="dock-tab-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 7.5h6l2-2h9a1.5 1.5 0 0 1 1.5 1.5v11a1.5 1.5 0 0 1-1.5 1.5h-17A1.5 1.5 0 0 1 2 18V9a1.5 1.5 0 0 1 1.5-1.5Z" /></svg>
+                    <span data-i18n-zh="文件管理" data-i18n-en="Files">文件管理</span>
+                  </button>
                   <button
                     id="event-toggle"
                     class="dock-tab"
@@ -309,9 +306,10 @@
                     aria-controls="event-log"
                     aria-expanded="false"
                     tabindex="-1"
-                    data-i18n-zh="会话日志"
-                    data-i18n-en="Session log"
-                  >会话日志</button>
+                  >
+                    <svg class="dock-tab-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 2.5h9l4 4V21H6a2 2 0 0 1-2-2V4.5a2 2 0 0 1 2-2Z" /><path d="M15 2.5V7h4M8 11h7M8 15h7" /></svg>
+                    <span data-i18n-zh="会话日志" data-i18n-en="Session log">会话日志</span>
+                  </button>
                 </div>
               </div>
 
