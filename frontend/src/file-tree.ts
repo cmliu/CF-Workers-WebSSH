@@ -129,6 +129,17 @@ export class FileTree {
   /** Token to cancel a previous in-progress setCwd expansion (Risk 2). */
   private setCwdToken = 0;
   /**
+   * Map tracking in-flight expandNode promises keyed by node.
+   *
+   * When a second expandToPath call overlaps with an on-going expandNode
+   * fetch on the same node (e.g. sftp_ready and sftp_list_result both
+   * emitCwdChange), the second call retrieves the in-flight promise and
+   * awaits it instead of bailing out. This prevents the race condition
+   * where the second expandToPath breaks prematurely because the node
+   * was still 'loading'.
+   */
+  private inflightExpands = new Map<TreeNode, Promise<void>>();
+  /**
    * Tree-level lifecycle epoch.
    *
    * `node.loadToken` only guards per-node races; it cannot observe that the
@@ -478,7 +489,20 @@ export class FileTree {
    * - `treeEpoch`  — per-tree: the whole tree was torn down while awaiting.
    */
   private async expandNode(node: TreeNode, silent = false): Promise<void> {
-    if (!this.isExpandable(node) || node.state === 'expanded' || node.state === 'loading') return;
+    // Not expandable or already expanded → no-op.
+    if (!this.isExpandable(node) || node.state === 'expanded') return;
+
+    // Node is currently loading — return the in-flight promise so callers
+    // (e.g. a second expandToPath) can await the result rather than
+    // bailing out prematurely. This fixes the race condition triggered
+    // when FileManager double-emits setCwd (sftp_ready + sftp_list_result).
+    if (node.state === 'loading') {
+      const inflight = this.inflightExpands.get(node);
+      if (inflight) return inflight;
+      // Defensive fallback: shouldn't happen if inflightExpands is always
+      // set before transitioning to 'loading'.
+      return;
+    }
 
     // Capture the tree generation this call belongs to.
     const epoch = this.treeEpoch;
@@ -488,26 +512,33 @@ export class FileTree {
     node.state = 'loading';
     this.refreshRowContent(node);
 
+    // Create the in-flight promise and register it so concurrent callers
+    // can await it instead of creating a duplicate fetch.
+    let resolve: () => void = () => {};
+    const promise = new Promise<void>((res) => { resolve = res; });
+    this.inflightExpands.set(node, promise);
+
     try {
       const result = await this.fetchEntries(node.path);
       // Tree-level guard: the tree was destroyed or rebuilt while awaiting,
       // so `node` is orphaned. Return without rolling back node.state —
       // the node died together with its tree and is unreachable.
-      if (epoch !== this.treeEpoch || !this.ready || !this.root) return;
+      if (epoch !== this.treeEpoch || !this.ready || !this.root) { resolve(); return; }
       // Per-node race-condition guard: if loadToken changed, this was superseded.
-      if (token !== node.loadToken) return;
+      if (token !== node.loadToken) { resolve(); return; }
 
       node.children = result.entries.map((entry) => this.createTreeNode(entry, node));
       node.isTruncated = result.isTruncated;
       node.state = 'expanded';
       this.refreshRowContent(node);
       this.renderChildren(node);
+      resolve();
     } catch (error) {
       // Tree-level guard MUST run before onError: a fetch rejected by the
       // teardown itself (rejectTreeLists on close/destroy) would otherwise
       // surface a bogus error toast for a session the user already left.
-      if (epoch !== this.treeEpoch || !this.ready || !this.root) return;
-      if (token !== node.loadToken) return;
+      if (epoch !== this.treeEpoch || !this.ready || !this.root) { resolve(); return; }
+      if (token !== node.loadToken) { resolve(); return; }
 
       // ── Silent failure handling for setCwd auto-expansion ────────────
       // When the tree is auto-walking to cwd and an ancestor fetch fails
@@ -524,6 +555,7 @@ export class FileTree {
           node.children = null;
           this.removeDescendantRows(node);
           this.refreshRowContent(node);
+          resolve();
           return;
         }
       }
@@ -535,6 +567,14 @@ export class FileTree {
       this.refreshRowContent(node);
       const message = error instanceof Error ? error.message : String(error);
       this.onError?.(message);
+      resolve();
+    } finally {
+      // Clean up the inflight map entry, but only if our promise is still
+      // the one registered (prevents clobbering a new expand on the same
+      // node that started after this one completed/cleaned up).
+      if (this.inflightExpands.get(node) === promise) {
+        this.inflightExpands.delete(node);
+      }
     }
   }
 
