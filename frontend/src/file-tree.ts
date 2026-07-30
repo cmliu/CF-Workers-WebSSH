@@ -604,7 +604,17 @@ export class FileTree {
 
     for (const segment of segments) {
       if (token !== this.setCwdToken) return;
-      if (segment === current.path) continue;
+      if (segment === current.path) {
+        // Even when the segment matches the current node (e.g. root "/" on
+        // initial load or setCwd("/")), we must still expand it so its
+        // children are rendered in the tree. Without this, clicking the root
+        // loads the right panel but the left tree stays collapsed.
+        if (current.state !== 'expanded') {
+          await this.expandNode(current, true);
+          if (token !== this.setCwdToken) return;
+        }
+        continue;
+      }
 
       // If current is unavailable, we can't see its real children.
       // Create a synthetic child for the next segment so the walk can
