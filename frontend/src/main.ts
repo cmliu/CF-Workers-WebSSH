@@ -425,6 +425,7 @@ fileManager = new FileManager({
   elements: collectFileManagerElements(),
   getLanguage: () => currentLanguage,
   onError: (message) => event(message, 'sftp', true),
+  onStatus: (message) => event(message, 'sftp'),
 });
 processManager = new ProcessManager({
   elements: collectProcessManagerElements(),

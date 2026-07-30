@@ -94,6 +94,11 @@ const DISCONNECTED: LocalizedText = {
   en: 'Connect to SSH to manage files',
 };
 
+const DISCONNECTED_CHANNEL: LocalizedText = {
+  zh: '文件管理连接已断开',
+  en: 'File management connection lost',
+};
+
 function requiredElement<T extends Element>(root: ParentNode, id: string): T {
   const node = root.querySelector<T>(`#${id}`);
   if (!node) throw new Error(`Missing file manager element #${id}`);
@@ -253,14 +258,14 @@ export class FileManager {
         this.showError(this.localize({ zh: '文件服务连接失败。', en: 'The file service connection failed.' }));
       }
     });
-    socket.addEventListener('close', () => {
+    socket.addEventListener('close', (event: CloseEvent) => {
       if (!this.isCurrent(socket, generation)) return;
       this.socket = null;
       this.ready = false;
       this.abortTransfers(false);
       this.pending.clear();
       this.activeListRequest = null;
-      this.renderDisconnected();
+      this.renderDisconnected(true, this.describeClose(event));
     });
   }
 
@@ -329,7 +334,7 @@ export class FileManager {
   }
 
   setLanguage(): void {
-    this.setStatus(this.statusCopy);
+    this.updateStatusText(this.statusCopy);
     this.renderEntries();
     this.updateProgressLanguage();
   }
@@ -1032,7 +1037,7 @@ export class FileManager {
     this.elements.delete.disabled = !idle || !selected;
   }
 
-  private renderDisconnected(): void {
+  private renderDisconnected(channelLost = false, detail?: LocalizedText): void {
     this.entries = [];
     this.selectedIndex = -1;
     this.elements.tableBody.replaceChildren();
@@ -1041,8 +1046,18 @@ export class FileManager {
     this.elements.error.hidden = true;
     this.elements.path.value = '/';
     this.hideProgress();
-    this.setStatus(DISCONNECTED);
+    if (channelLost) this.setStatus(detail ?? DISCONNECTED_CHANNEL);
+    else this.updateStatusText(DISCONNECTED);
     this.updateControls();
+  }
+
+  private describeClose(event: CloseEvent): LocalizedText | undefined {
+    if (event.code === 1000) return undefined;
+    const codeInfo = this.isChinese()
+      ? `代码 ${event.code}${event.reason ? `：${event.reason}` : ''}`
+      : `code ${event.code}${event.reason ? `: ${event.reason}` : ''}`;
+    const base = DISCONNECTED_CHANNEL;
+    return { zh: `${base.zh}（${codeInfo}）`, en: `${base.en} (${codeInfo})` };
   }
 
   private showError(message: string): void {
@@ -1050,18 +1065,21 @@ export class FileManager {
     this.elements.empty.hidden = true;
     this.elements.error.textContent = message;
     this.elements.error.hidden = false;
-    this.setStatus({ zh: message, en: message });
+    this.updateStatusText({ zh: message, en: message });
     this.onError?.(message);
     this.updateControls();
   }
 
   private setStatus(copy: LocalizedText): void {
+    this.updateStatusText(copy);
+    this.onStatus?.(this.localize(copy));
+  }
+
+  private updateStatusText(copy: LocalizedText): void {
     this.statusCopy = copy;
     this.elements.status.dataset.i18nZh = copy.zh;
     this.elements.status.dataset.i18nEn = copy.en;
-    const text = this.localize(copy);
-    this.elements.status.textContent = text;
-    this.onStatus?.(text);
+    this.elements.status.textContent = this.localize(copy);
   }
 
   private showProgress(operation: 'upload' | 'download', name: string, percent: number): void {
