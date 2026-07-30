@@ -102,6 +102,11 @@ const DISCONNECTED_CHANNEL: LocalizedText = {
   en: 'File management connection lost',
 };
 
+// Auto-reconnect backoff for the file manager after an unexpected drop.
+const RECONNECT_BASE_MS = 1_000;
+const RECONNECT_MAX_MS = 15_000;
+const RECONNECT_MAX_ATTEMPTS = 10;
+
 function requiredElement<T extends Element>(root: ParentNode, id: string): T {
   const node = root.querySelector<T>(`#${id}`);
   if (!node) throw new Error(`Missing file manager element #${id}`);
@@ -212,6 +217,14 @@ export class FileManager {
   private uploadConfirmationPending = false;
   private messageQueue: Promise<void> = Promise.resolve();
   private statusCopy: LocalizedText = DISCONNECTED;
+  /** Auto-reconnect state: true while the SSH session is alive and we want a file channel. */
+  private wantConnection = false;
+  /** Last attach URL, saved for reconnection. */
+  private url: string | null = null;
+  /** Pending reconnect timer id, null when idle. */
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Current reconnect attempt count (0 = no attempt). */
+  private reconnectAttempts = 0;
   /** Pending tree-view directory fetch promises, keyed by `tree-` prefixed requestId. */
   private treeLists = new Map<string, {
     resolve: (value: { path: string; entries: SFTPEntry[]; isTruncated: boolean }) => void;
@@ -233,7 +246,11 @@ export class FileManager {
   }
 
   attach(url: string): void {
+    this.clearReconnectTimer();
+    this.reconnectAttempts = 0;
     this.reset();
+    this.wantConnection = true;
+    this.url = url;
     let target: URL;
     try {
       target = new URL(url, window.location.href);
@@ -277,7 +294,16 @@ export class FileManager {
       this.pending.clear();
       this.activeListRequest = null;
       this.rejectTreeLists(new Error('SFTP connection closed'));
-      this.renderDisconnected(true, this.describeClose(event));
+      if (event.code !== 1000 && event.code !== 1005) {
+        // Unexpected drop. Auto-reconnect unless the user intentionally tore the session down.
+        if (this.wantConnection) {
+          this.scheduleReconnect();
+        } else {
+          this.renderDisconnected(true, this.describeClose(event));
+        }
+      } else {
+        this.renderDisconnected(true, this.describeClose(event));
+      }
     });
   }
 
@@ -288,6 +314,9 @@ export class FileManager {
   }
 
   reset(): void {
+    this.wantConnection = false;
+    this.clearReconnectTimer();
+    this.reconnectAttempts = 0;
     this.generation++;
     const socket = this.socket;
     this.socket = null;
@@ -1184,6 +1213,37 @@ export class FileManager {
     this.updateStatusText({ zh: message, en: message });
     this.onError?.(message);
     this.updateControls();
+  }
+
+  private scheduleReconnect(): void {
+    if (!this.wantConnection || !this.url || this.reconnectTimer !== null) return;
+    this.reconnectAttempts++;
+    if (this.reconnectAttempts > RECONNECT_MAX_ATTEMPTS) {
+      this.reconnectAttempts = 0;
+      this.renderDisconnected(true, { zh: '文件管理重连失败。', en: 'File manager reconnect failed.' });
+      return;
+    }
+    const delay = Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * (2 ** (this.reconnectAttempts - 1)));
+    this.setStatus({
+      zh: '文件管理连接已断开，正在重连…',
+      en: 'File manager disconnected; reconnecting…',
+    });
+    this.reconnectTimer = window.setTimeout(() => {
+      this.reconnectTimer = null;
+      if (!this.wantConnection || !this.url) return;
+      try {
+        this.attach(this.url);
+      } catch {
+        this.scheduleReconnect();
+      }
+    }, delay);
+  }
+
+  private clearReconnectTimer(): void {
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
   }
 
   private setStatus(copy: LocalizedText): void {

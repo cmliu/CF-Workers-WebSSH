@@ -249,9 +249,9 @@ export class SSHSessionDO implements DurableObject {
     }
     if (!attach.session) return Response.json({ error: 'SSH session is still initializing' }, { status: 409 });
 
-    // Consume before exposing the client endpoint so concurrent replays cannot
-    // attach a second file-management channel to the same SSH session.
-    this.deleteSFTPAttachToken(token, attach);
+    // Keep the token valid after attach so the client can auto-reconnect
+    // the file manager after a transient connection drop (e.g. code 1006).
+    // It is deleted in cleanup() when the main SSH session closes.
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
@@ -305,12 +305,17 @@ export class SSHSessionDO implements DurableObject {
   }
 
   private registerSFTPAttachToken(token: string, attachUrl: string, mainWebSocket: WebSocket): void {
-    const expiresAt = Date.now() + SFTP_ATTACH_TOKEN_TTL_MS;
+    // The SFTP token intentionally lives for the lifetime of the main SSH
+    // session (it is removed in cleanup() when that session closes). This
+    // lets the client re-attach the file manager after a transient drop
+    // (e.g. WebSocket code 1006) instead of being locked out by a one-time
+    // token. The SSH session setup still gates attach on attach.session
+    // being ready.
     const attach: SFTPAttachToken = {
       mainWebSocket,
       attachUrl,
-      expiresAt,
-      timeout: setTimeout(() => this.deleteSFTPAttachToken(token, attach), SFTP_ATTACH_TOKEN_TTL_MS),
+      expiresAt: Number.MAX_SAFE_INTEGER,
+      timeout: 0 as unknown as ReturnType<typeof setTimeout>,
     };
     this.sftpAttachTokens.set(token, attach);
     this.sftpTokenByMainWebSocket.set(mainWebSocket, token);
