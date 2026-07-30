@@ -967,7 +967,7 @@ button:disabled {
 .resource-metrics {
   display: flex;
   min-width: 0;
-  flex: 0 1 490px;
+  flex: 0 1 520px;
   align-items: center;
   gap: 9px;
 }
