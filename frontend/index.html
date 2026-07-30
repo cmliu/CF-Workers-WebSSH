@@ -391,6 +391,14 @@
               </div>
 
               <section id="file-manager-panel" class="file-manager" role="tabpanel" aria-labelledby="file-manager-tab" tabindex="0" hidden>
+                <aside id="file-tree" class="file-tree" aria-label="目录树" data-i18n-aria-label-zh="目录树" data-i18n-aria-label-en="Directory tree">
+                  <div class="file-tree-header">
+                    <span class="file-tree-title" data-i18n-zh="目录" data-i18n-en="Directories">目录</span>
+                    <button id="file-tree-collapse" class="file-tree-collapse icon-button" type="button" aria-label="折叠侧栏" data-i18n-aria-label-zh="折叠侧栏" data-i18n-aria-label-en="Collapse sidebar" title="折叠侧栏" data-i18n-title-zh="折叠侧栏" data-i18n-title-en="Collapse sidebar">&#9776;</button>
+                  </div>
+                  <div id="file-tree-scroller" class="file-tree-scroller"></div>
+                  <div class="file-tree-resize" aria-hidden="true"></div>
+                </aside>
                 <div class="file-toolbar">
                   <label class="file-path-field" for="file-manager-path">
                     <span class="sr-only" data-i18n-zh="当前路径" data-i18n-en="Current path">当前路径</span>

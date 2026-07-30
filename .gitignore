@@ -8,3 +8,5 @@ coverage/
 !.env.example
 .workbuddy/
 tests/
+deliverables/
+frontend/dist-*

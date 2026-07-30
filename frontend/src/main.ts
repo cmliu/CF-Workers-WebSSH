@@ -7,6 +7,7 @@ import { decryptPasswordResult, encryptPassword, isEncryptedPassword } from './p
 import { resolveConnectionControl, resolveConnectionPanel } from './ui-state';
 import { classifyHostKey, SSH_FINGERPRINT_RE, type HostKeyPrompt } from './host-key';
 import { FileManager, collectFileManagerElements } from './file-manager';
+import { FileTree } from './file-tree';
 import { ProcessManager, collectProcessManagerElements } from './process-manager';
 import { resetTerminalForConnection } from './terminal-session';
 import './style.css';
@@ -293,6 +294,7 @@ const ui = {
   eventMessage: element<HTMLElement>('event-message'),
   fileManagerTab: element<HTMLButtonElement>('file-manager-tab'),
   fileManagerPanel: element<HTMLElement>('file-manager-panel'),
+  fileTree: element<HTMLElement>('file-tree'),
   processManagerTab: element<HTMLButtonElement>('process-manager-tab'),
   processManagerPanel: element<HTMLElement>('process-manager-panel'),
   eventToggle: element<HTMLButtonElement>('event-toggle'),
@@ -362,6 +364,7 @@ function applyLanguage(language: Language, persist = false): void {
     }
   }
   if (fileManager) fileManager.setLanguage();
+  if (fileTree) fileTree.setLanguage();
   if (processManager) processManager.setLanguage();
 
   if (persist) {
@@ -402,6 +405,7 @@ const latestHistoryMutation = new Map<string, number>();
 const panelMedia = window.matchMedia('(max-width: 760px)');
 let panelOpen = !panelMedia.matches;
 let fileManager: FileManager;
+let fileTree: FileTree;
 let processManager: ProcessManager;
 
 const terminal = new Terminal({
@@ -425,7 +429,17 @@ fileManager = new FileManager({
   elements: collectFileManagerElements(),
   getLanguage: () => currentLanguage,
   onError: (message) => event(message, 'sftp', true),
+  onStatus: (message) => event(message, 'sftp'),
 });
+fileTree = new FileTree({
+  container: ui.fileTree,
+  fetchEntries: (path) => fileManager.fetchDirectoryEntries(path),
+  getLanguage: () => currentLanguage,
+  onNavigate: (path) => fileManager.navigate(path),
+  onError: (message) => event(message, 'sftp', true),
+  initialRoot: '/',
+});
+fileManager.onCwdChange((cwd) => fileTree.setCwd(cwd));
 processManager = new ProcessManager({
   elements: collectProcessManagerElements(),
   getLanguage: () => currentLanguage,
@@ -1312,6 +1326,7 @@ function handleServerMessage(message: ServerMessage): void {
       event(bilingual('无法打开文件管理连接。', 'Could not open the file-management connection.'), 'sftp', true);
       return;
     }
+    fileTree.setReady(true);
     event(bilingual('文件管理通道已可用。', 'File management channel is available.'), 'sftp');
     return;
   }
@@ -1449,6 +1464,7 @@ function failActiveConnection(activeSocket: WebSocket | null, closeReason: strin
   currentRememberedFingerprint = '';
   stopTimers();
   fileManager.reset();
+  fileTree?.setReady(false);
   processManager.reset();
   clearHostKeyPrompt();
   invalidateHistoryPasswordLoad();
@@ -1592,6 +1608,7 @@ async function connect(): Promise<void> {
       currentRememberedFingerprint = '';
       stopTimers();
       fileManager.reset();
+      fileTree?.setReady(false);
       processManager.reset();
       clearHostKeyPrompt();
       invalidateHistoryPasswordLoad();
@@ -1636,6 +1653,7 @@ function disconnect(reason = bilingual('已由用户断开连接', 'Disconnected
   socket = null;
   stopTimers();
   fileManager.reset();
+  fileTree?.setReady(false);
   processManager.reset();
   clearHostKeyPrompt();
   invalidateHistoryPasswordLoad();
@@ -1923,6 +1941,8 @@ terminal.onData(sendTerminalData);
 new ResizeObserver(() => fitTerminal(true)).observe(ui.terminalStage);
 window.addEventListener('beforeunload', () => {
   fileManager.reset();
+  fileTree?.setReady(false);
+  fileTree?.destroy();
   processManager.reset();
   socket?.close(1000, 'Page closed');
 });
