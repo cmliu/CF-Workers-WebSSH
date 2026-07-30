@@ -743,6 +743,10 @@ export class FileTree {
     this.updateTabindex();
     if (node.type === 'directory' && !node.unavailable) {
       this.onNavigate(node.path);
+      // Expand the node in the tree immediately so aria-expanded flips to
+      // "true" (or shows a loading spinner) without waiting for the async
+      // setCwd → expandToPath round-trip that follows onNavigate.
+      void this.expandNode(node);
     }
     // Files/symlinks: select only, no right-side navigation
     // Unavailable directories: highlight but don't navigate (SFTP would
