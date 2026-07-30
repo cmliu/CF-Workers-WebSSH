@@ -402,8 +402,7 @@ let historyPasswordLoadGeneration = 0;
 let historyMutationSequence = 0;
 let keyFileReadGeneration = 0;
 const latestHistoryMutation = new Map<string, number>();
-const panelMedia = window.matchMedia('(max-width: 760px)');
-let panelOpen = !panelMedia.matches;
+let panelOpen = false;
 let fileManager: FileManager;
 let fileTree: FileTree;
 let processManager: ProcessManager;
@@ -1130,13 +1129,13 @@ function fitTerminal(send = true): void {
         socket.send(JSON.stringify({ type: 'resize', cols: terminal.cols, rows: terminal.rows }));
       }
     } catch {
-      // The terminal can be temporarily dimensionless during a mobile drawer transition.
+      // The terminal can be temporarily dimensionless during a panel drawer transition.
     }
   });
 }
 
 function setPanelOpen(open: boolean): void {
-  const view = resolveConnectionPanel(open, panelMedia.matches);
+  const view = resolveConnectionPanel(open);
   panelOpen = view.expanded;
   if (!view.expanded && (connectionState === 'connecting' || connectionState === 'connected' || connectionState === 'disconnecting')) {
     invalidateHistoryPasswordLoad();
@@ -1193,7 +1192,7 @@ function markReady(message = bilingual('交互式 Shell 已就绪', 'Interactive
   if (connectionState === 'connected') return;
   invalidateHistoryPasswordLoad();
   setState('connected');
-  if (panelMedia.matches) setPanelOpen(false);
+  setPanelOpen(false);
   void saveConnectedProfile().catch(() => {
     toast(bilingual('连接成功，但无法更新历史记录。', 'Connected, but the history could not be updated.'), 'error');
   });
@@ -1947,12 +1946,11 @@ window.addEventListener('beforeunload', () => {
   socket?.close(1000, 'Page closed');
 });
 document.addEventListener('keydown', (keyEvent) => {
-  if (keyEvent.key === 'Escape' && panelMedia.matches && panelOpen && !ui.hostKeyDialog.open) {
+  if (keyEvent.key === 'Escape' && panelOpen && !ui.hostKeyDialog.open) {
     setPanelOpen(false);
     ui.panelToggle.focus();
   }
 });
-panelMedia.addEventListener('change', (mediaEvent) => setPanelOpen(!mediaEvent.matches));
 
 let storedTheme: string | null = null;
 try { storedTheme = localStorage.getItem(THEME_STORAGE_KEY); } catch { /* Storage can be disabled. */ }
