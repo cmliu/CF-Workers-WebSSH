@@ -1351,11 +1351,22 @@ button:disabled {
 }
 
 .file-manager:has(> .file-tree.is-collapsed) {
-  grid-template-columns: 0 minmax(0, 1fr);
+  grid-template-columns: 24px minmax(0, 1fr);
 }
-
 .file-manager:has(> .file-tree.is-collapsed) > .file-tree {
+  overflow: hidden;
+}
+.file-manager:has(> .file-tree.is-collapsed) > .file-tree .file-tree-scroller,
+.file-manager:has(> .file-tree.is-collapsed) > .file-tree .file-tree-resize {
   display: none;
+}
+.file-manager:has(> .file-tree.is-collapsed) > .file-tree .file-tree-title {
+  display: none;
+}
+.file-manager:has(> .file-tree.is-collapsed) > .file-tree .file-tree-header {
+  justify-content: center;
+  padding-left: 0;
+  padding-right: 0;
 }
 
 .file-toolbar { grid-area: toolbar; }
