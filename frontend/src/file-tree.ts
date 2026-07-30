@@ -677,6 +677,16 @@ export class FileTree {
       if (token !== this.setCwdToken) return;
     }
 
+    // Expand the target directory itself (not just its ancestors) so its
+    // children are immediately rendered and aria-expanded is "true".
+    // This covers initial-connection setCwd where activateNode is never
+    // called — ancestors were expanded during the loop above; the target
+    // needs this extra step.
+    if (current.state === 'collapsed' && current.type === 'directory' && !current.unavailable) {
+      await this.expandNode(current, true);
+      if (token !== this.setCwdToken) return;
+    }
+
     this.highlightNode(current);
     this.focusedNode = current;
     this.updateTabindex();
