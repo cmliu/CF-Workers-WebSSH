@@ -57,11 +57,9 @@ interface LocalizedText {
   en: string;
 }
 
-const TREE_TITLE: LocalizedText = { zh: '目录', en: 'Directories' };
 const EMPTY_TEXT: LocalizedText = { zh: '— 空 —', en: '— Empty —' };
 const TRUNCATED_TEXT: LocalizedText = { zh: '(已截断)', en: '(truncated)' };
 const RETRY_TEXT: LocalizedText = { zh: '重试', en: 'Retry' };
-const COLLAPSE_TEXT: LocalizedText = { zh: '折叠侧栏', en: 'Collapse sidebar' };
 
 const WIDTH_STORAGE_KEY = 'cf-webssh.file-tree.width';
 const COLLAPSED_STORAGE_KEY = 'cf-webssh.file-tree.collapsed';
@@ -124,6 +122,17 @@ export class FileTree {
   private width = DEFAULT_WIDTH;
   /** Token to cancel a previous in-progress setCwd expansion (Risk 2). */
   private setCwdToken = 0;
+  /**
+   * Tree-level lifecycle epoch.
+   *
+   * `node.loadToken` only guards per-node races; it cannot observe that the
+   * entire tree was torn down (setReady(false) / destroy() / setRootPath())
+   * while a fetch was in flight. Every whole-tree teardown bumps this counter,
+   * so an awaiting `expandNode` continuation can tell that the node it owns
+   * has been orphaned and must not touch the DOM, node state, or `onError`.
+   * <b>Invariant: any code path that replaces or clears this.root must increment treeEpoch.</b>
+   */
+  private treeEpoch = 0;
 
   constructor(options: FileTreeOptions) {
     this.container = options.container;
@@ -164,6 +173,7 @@ export class FileTree {
   setReady(ready: boolean): void {
     this.ready = ready;
     if (!ready) {
+      this.treeEpoch++;
       this.root = null;
       this.selectedPath = null;
       this.focusedNode = null;
@@ -181,6 +191,7 @@ export class FileTree {
   setRootPath(path: string): void {
     this.rootPath = path;
     if (this.ready) {
+      this.treeEpoch++;
       this.root = this.createRootNode(path);
       this.focusedNode = this.root;
       this.selectedPath = null;
@@ -209,6 +220,7 @@ export class FileTree {
   /** Tear down: abort listeners, clear DOM. */
   destroy(): void {
     this.bindings.abort();
+    this.treeEpoch++;
     this.root = null;
     this.selectedPath = null;
     this.focusedNode = null;
@@ -343,6 +355,15 @@ export class FileTree {
       retry.type = 'button';
       retry.className = 'file-tree-retry';
       retry.textContent = this.localize(RETRY_TEXT);
+      // Keep retry out of the Tab sequence. The tree uses a roving-tabindex
+      // model (only the focused row has tabIndex=0); a natively tabbable
+      // control inside role="treeitem" would break ARIA tree navigation.
+      retry.tabIndex = -1;
+      // Give assistive tech a node-scoped label instead of context-free "Retry".
+      retry.setAttribute('aria-label', this.localize({
+        zh: `重试加载 ${node.name}`,
+        en: `Retry loading ${node.name}`,
+      }));
       row.append(retry);
     }
 
@@ -411,10 +432,16 @@ export class FileTree {
 
   /**
    * Lazily load and expand a node's children.
-   * Uses loadToken to discard results from a cancelled (superseded) fetch.
+   *
+   * Two independent cancellation layers:
+   * - `loadToken`  — per-node: a newer expand/collapse superseded this fetch.
+   * - `treeEpoch`  — per-tree: the whole tree was torn down while awaiting.
    */
   private async expandNode(node: TreeNode): Promise<void> {
     if (!this.isExpandable(node) || node.state === 'expanded' || node.state === 'loading') return;
+
+    // Capture the tree generation this call belongs to.
+    const epoch = this.treeEpoch;
 
     node.loadToken++;
     const token = node.loadToken;
@@ -423,7 +450,11 @@ export class FileTree {
 
     try {
       const result = await this.fetchEntries(node.path);
-      // Race-condition guard: if loadToken changed, this fetch was superseded
+      // Tree-level guard: the tree was destroyed or rebuilt while awaiting,
+      // so `node` is orphaned. Return without rolling back node.state —
+      // the node died together with its tree and is unreachable.
+      if (epoch !== this.treeEpoch || !this.ready || !this.root) return;
+      // Per-node race-condition guard: if loadToken changed, this was superseded.
       if (token !== node.loadToken) return;
 
       node.children = result.entries.map((entry) => this.createTreeNode(entry, node));
@@ -432,7 +463,12 @@ export class FileTree {
       this.refreshRowContent(node);
       this.renderChildren(node);
     } catch (error) {
+      // Tree-level guard MUST run before onError: a fetch rejected by the
+      // teardown itself (rejectTreeLists on close/destroy) would otherwise
+      // surface a bogus error toast for a session the user already left.
+      if (epoch !== this.treeEpoch || !this.ready || !this.root) return;
       if (token !== node.loadToken) return;
+
       node.state = 'error';
       node.children = null;
       this.removeDescendantRows(node);
@@ -671,6 +707,10 @@ export class FileTree {
 
     // Retry button click → re-expand
     if (event.target instanceof Element && event.target.closest('.file-tree-retry')) {
+      // expandNode calls refreshRowContent (destroys this button); and the
+      // button is tabIndex=-1 so focus would fall back to <body>. Move focus
+      // onto the owning row first (no scrollIntoView, no scroll jump).
+      this.focusNode(node);
       void this.expandNode(node);
       return;
     }

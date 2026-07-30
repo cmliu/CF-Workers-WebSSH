@@ -361,13 +361,13 @@ export class FileManager {
    */
   fetchDirectoryEntries(path: string): Promise<{ path: string; entries: SFTPEntry[]; isTruncated: boolean }> {
     if (!this.ready || !this.isSocketOpen()) {
-      return Promise.reject(new Error('SFTP not ready'));
+      return Promise.reject(new Error(this.localize({ zh: 'SFTP 尚未就绪。', en: 'SFTP is not ready.' })));
     }
     let normalized: string;
     try {
       normalized = normalizePath(path);
     } catch {
-      return Promise.reject(new Error('Invalid path'));
+      return Promise.reject(new Error(this.localize({ zh: '路径无效。', en: 'Invalid path.' })));
     }
     const requestId = `tree-${this.generation}-${++this.requestSequence}`;
     return new Promise((resolve, reject) => {
@@ -999,9 +999,18 @@ export class FileManager {
     this.treeLists.delete(requestId);
     let path: string;
     try { path = normalizePath(typeof message.path === 'string' ? message.path : ''); }
-    catch { entry.reject(new Error('Invalid path in tree list result')); return; }
+    catch {
+      entry.reject(new Error(
+        this.localize({ zh: '目录列表数据异常。', en: 'The directory listing response was malformed.' }),
+        { cause: 'invalid path in tree list result' },
+      ));
+      return;
+    }
     if (!Array.isArray(message.entries)) {
-      entry.reject(new Error('Invalid entries in tree list result'));
+      entry.reject(new Error(
+        this.localize({ zh: '目录列表数据异常。', en: 'The directory listing response was malformed.' }),
+        { cause: 'invalid entries in tree list result' },
+      ));
       return;
     }
     const entries = message.entries
