@@ -1519,6 +1519,21 @@ button:disabled {
   color: var(--danger);
 }
 
+.file-tree-row.is-unavailable {
+  opacity: 0.55;
+}
+.file-tree-row.is-unavailable .file-tree-name {
+  color: var(--color-text-muted, #888);
+  font-style: italic;
+}
+.file-tree-lock {
+  display: inline-block;
+  width: 12px;
+  text-align: center;
+  font-size: 0.85em;
+  opacity: 0.7;
+}
+
 .file-tree-retry {
   flex: 0 0 auto;
   padding: 0 4px;

@@ -50,6 +50,12 @@ interface TreeNode {
   element: HTMLElement | null;
   /** Depth in the tree (root = 0). */
   depth: number;
+  /**
+   * True if the node is on the path to cwd but its SFTP list failed
+   * (e.g. Permission denied). The node is rendered as a "locked" leaf —
+   * still visible to preserve the full path, but not expandable.
+   */
+  unavailable: boolean;
 }
 
 interface LocalizedText {
@@ -242,6 +248,7 @@ export class FileTree {
       loadToken: 0,
       element: null,
       depth: 0,
+      unavailable: false,
     };
   }
 
@@ -260,12 +267,36 @@ export class FileTree {
       loadToken: 0,
       element: null,
       depth: parent.depth + 1,
+      unavailable: false,
     };
   }
 
-  /** Whether a node can be expanded (only directories). */
+  /**
+   * Create a synthetic "potentially available" child for the next path
+   * segment when the parent's list failed. The synthetic node starts
+   * without the unavailable flag — it will be marked unavailable on the
+   * next fetch attempt if that one also fails.
+   */
+  private createUnavailableChild(path: string, parent: TreeNode): TreeNode {
+    const name = path.slice(parent.path === '/' ? 1 : parent.path.length + 1);
+    return {
+      path,
+      name,
+      type: 'directory',
+      parent,
+      children: null,
+      state: 'collapsed',
+      isTruncated: false,
+      loadToken: 0,
+      element: null,
+      depth: parent.depth + 1,
+      unavailable: false,
+    };
+  }
+
+  /** Whether a node can be expanded (only directories, excludes unavailable). */
   private isExpandable(node: TreeNode): boolean {
-    return node.type === 'directory';
+    return node.type === 'directory' && !node.unavailable;
   }
 
   // ── Rendering ───────────────────────────────────────────────────────
@@ -310,6 +341,7 @@ export class FileTree {
     if (isSelected) row.classList.add('is-selected');
     if (node.state === 'loading') row.classList.add('is-loading');
     if (node.state === 'error') row.classList.add('is-error');
+    if (node.unavailable) row.classList.add('is-unavailable');
 
     row.style.setProperty('--file-tree-depth', String(node.depth));
     row.dataset.path = node.path;
@@ -317,12 +349,20 @@ export class FileTree {
 
     const expandable = this.isExpandable(node);
 
-    // Toggle / spinner / spacer
+    // Toggle / spinner / lock / spacer
     if (node.state === 'loading') {
       const spinner = document.createElement('span');
       spinner.className = 'file-tree-spinner';
       spinner.setAttribute('aria-hidden', 'true');
       row.append(spinner);
+    } else if (node.unavailable) {
+      // Lock icon for nodes whose SFTP list failed (e.g. Permission denied
+      // on an ancestor). Not expandable; preserves full path in the tree.
+      const lock = document.createElement('span');
+      lock.className = 'file-tree-lock';
+      lock.setAttribute('aria-hidden', 'true');
+      lock.textContent = '\u{1F512}'; // 🔒
+      row.append(lock);
     } else if (expandable) {
       const toggle = document.createElement('span');
       toggle.className = 'file-tree-toggle';
@@ -469,31 +509,25 @@ export class FileTree {
       if (epoch !== this.treeEpoch || !this.ready || !this.root) return;
       if (token !== node.loadToken) return;
 
-      // ── Silent re-rooting for setCwd auto-expansion ─────────────────
-      // When setCwd triggers expandToPath and an ancestor node fetch fails
-      // (e.g. Permission denied on root in a restricted shell), silently
-      // re-root the tree to cwd so users can still browse their accessible
-      // directory. Manual expand (user click/keyboard) does NOT pass
-      // silent=true, so those errors still surface via the error path below.
+      // ── Silent failure handling for setCwd auto-expansion ────────────
+      // When the tree is auto-walking to cwd and an ancestor fetch fails
+      // (e.g. restricted shell where / is unreadable), mark the node as
+      // unavailable instead of re-rooting. The walk will continue via a
+      // synthetic child in expandToPath, preserving the full path display.
+      // Manual expand (user click/keyboard) does NOT pass silent=true, so
+      // those errors still surface via the error path below.
       if (silent) {
         const cwd = this.selectedPath;
         if (cwd && isDescendantPath(node.path, cwd)) {
-          if (node.path !== cwd) {
-            // Failed node is a strict ancestor of cwd: switch root to cwd
-            // then expand the new root so the user sees their directory.
-            this.setRootPath(cwd);
-            const newRoot = this.root;
-            if (newRoot) void this.expandNode(newRoot);
-          } else {
-            // Failed node is cwd itself: leave it as a collapsed leaf
-            // without surfacing an error.
-            node.state = 'collapsed';
-            this.refreshRowContent(node);
-          }
+          node.unavailable = true;
+          node.state = 'collapsed';
+          node.children = null;
+          this.removeDescendantRows(node);
+          this.refreshRowContent(node);
           return;
         }
       }
-      // ── End silent re-rooting ────────────────────────────────────────
+      // ── End silent handling ──────────────────────────────────────────
 
       node.state = 'error';
       node.children = null;
@@ -525,41 +559,67 @@ export class FileTree {
   private async expandToPath(cwd: string, token: number): Promise<void> {
     if (!this.ready || !this.root) return;
 
-    // If cwd escapes the current root, switch root to cwd
-    if (!isDescendantPath(this.rootPath, cwd)) {
-      this.setRootPath(cwd);
-      if (token !== this.setCwdToken) return;
-      this.highlightNode(this.root);
-      this.focusedNode = this.root;
-      this.updateTabindex();
-      this.root.element?.scrollIntoView({ block: 'nearest' });
-      return;
-    }
-
-    let current = this.root;
     const segments = splitPathSegments(cwd);
+    let current = this.root;
 
     for (const segment of segments) {
-      if (token !== this.setCwdToken) return; // cancelled by a newer setCwd
-
-      // Skip the root segment (current is already at root)
+      if (token !== this.setCwdToken) return;
       if (segment === current.path) continue;
 
-      // Ensure current is expanded so we can search its children
-      if (current.state !== 'expanded') {
-        await this.expandNode(current, true);
-        if (token !== this.setCwdToken) return; // cancelled
+      // If current is unavailable, we can't see its real children.
+      // Create a synthetic child for the next segment so the walk can
+      // continue. The synthetic child starts as "potentially available"
+      // and will be tried on the next iteration.
+      if (current.unavailable) {
+        // Check if a synthetic child for this segment already exists
+        let synth = current.children?.find((c) => c.path === segment) ?? null;
+        if (!synth) {
+          synth = this.createUnavailableChild(segment, current);
+          if (!current.children) current.children = [];
+          current.children.push(synth);
+          this.renderChildren(current);
+        }
+        current = synth;
+        continue;
       }
 
-      // Find the child matching this path segment
+      // Try to expand current (silent, no error UI on failure).
+      if (current.state !== 'expanded') {
+        await this.expandNode(current, true);
+        if (token !== this.setCwdToken) return;
+
+        // Expansion failed and marked current as unavailable: create
+        // a synthetic child for the next segment.
+        if (current.unavailable) {
+          let synth = current.children?.find((c) => c.path === segment) ?? null;
+          if (!synth) {
+            synth = this.createUnavailableChild(segment, current);
+            if (!current.children) current.children = [];
+            current.children.push(synth);
+            this.renderChildren(current);
+          }
+          current = synth;
+          continue;
+        }
+      }
+
+      // Find the real child matching the next segment.
       const child = current.children?.find((c) => c.path === segment);
-      if (!child) break; // path segment not found; highlight deepest ancestor
+      if (!child) break; // path segment not found in directory
       current = child;
     }
 
-    if (token !== this.setCwdToken) return; // cancelled
+    if (token !== this.setCwdToken) return;
 
-    // Highlight and scroll to the target node
+    // If the final node is a synthetic child of an unavailable parent,
+    // try expanding it (the loop's post-expansion check above may have
+    // created it and skipped to the next iteration, which then
+    // short-circuited because segment === current.path).
+    if (current.state === 'collapsed' && !current.unavailable && current.parent?.unavailable) {
+      await this.expandNode(current, true);
+      if (token !== this.setCwdToken) return;
+    }
+
     this.highlightNode(current);
     this.focusedNode = current;
     this.updateTabindex();
@@ -631,10 +691,12 @@ export class FileTree {
     this.highlightNode(node);
     this.focusedNode = node;
     this.updateTabindex();
-    if (node.type === 'directory') {
+    if (node.type === 'directory' && !node.unavailable) {
       this.onNavigate(node.path);
     }
     // Files/symlinks: select only, no right-side navigation
+    // Unavailable directories: highlight but don't navigate (SFTP would
+    // refuse and surface an error to the user).
   }
 
   private handleKeydown(event: KeyboardEvent): void {
