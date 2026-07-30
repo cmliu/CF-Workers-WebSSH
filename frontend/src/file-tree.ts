@@ -742,9 +742,19 @@ export class FileTree {
   // ── Collapsed sidebar ───────────────────────────────────────────────
 
   private loadCollapsed(): void {
+    let stored: string | null = null;
     try {
-      this.collapsed = localStorage.getItem(COLLAPSED_STORAGE_KEY) === 'true';
+      stored = localStorage.getItem(COLLAPSED_STORAGE_KEY);
     } catch { /* localStorage unavailable */ }
+
+    if (stored === null) {
+      // No saved preference: default to collapsed on narrow screens.
+      this.collapsed = typeof window.matchMedia === 'function'
+        && window.matchMedia('(max-width: 760px)').matches;
+    } else {
+      this.collapsed = stored === 'true';
+    }
+
     if (this.collapsed) this.container.classList.add('is-collapsed');
   }
 

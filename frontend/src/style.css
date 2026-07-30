@@ -2342,16 +2342,27 @@ button:disabled {
     padding: 3px 5px;
   }
 
-  .file-tree {
-    display: none;
+  /* Mobile: keep the tree column but default it to a 24px collapsed strip
+     (see JS loadCollapsed()). Use min() so a width dragged wide on desktop
+     won't fill the whole phone screen. */
+  .file-manager {
+    grid-template-columns: min(var(--file-tree-width, 200px), 45vw) minmax(0, 1fr);
+    grid-template-areas:
+      "toolbar toolbar"
+      "tree    table"
+      "status  status";
   }
 
-  .file-manager {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-areas:
-      "toolbar"
-      "table"
-      "status";
+  /* Restate the collapsed column width inside the media query: the rule at
+     L1353 (outside the query) is overridden by the .file-manager rule above
+     due to source order, so the 24px collapsed width must be repeated here. */
+  .file-manager:has(> .file-tree.is-collapsed) {
+    grid-template-columns: 24px minmax(0, 1fr);
+  }
+
+  /* Touch screens: dragging the resize handle is error-prone, hide it. */
+  .file-tree-resize {
+    display: none;
   }
 
   .file-actions {
