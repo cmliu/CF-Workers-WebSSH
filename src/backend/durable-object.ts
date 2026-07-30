@@ -18,7 +18,7 @@ interface SFTPAttachToken {
   mainWebSocket: WebSocket;
   attachUrl: string;
   expiresAt: number;
-  timeout: ReturnType<typeof setTimeout>;
+  timeout: ReturnType<typeof setTimeout> | null;
   session?: SSHSession;
 }
 type AuxiliaryAttachToken = SFTPAttachToken;
@@ -315,7 +315,7 @@ export class SSHSessionDO implements DurableObject {
       mainWebSocket,
       attachUrl,
       expiresAt: Number.MAX_SAFE_INTEGER,
-      timeout: 0 as unknown as ReturnType<typeof setTimeout>,
+      timeout: null,
     };
     this.sftpAttachTokens.set(token, attach);
     this.sftpTokenByMainWebSocket.set(mainWebSocket, token);
@@ -330,7 +330,7 @@ export class SSHSessionDO implements DurableObject {
       mainWebSocket,
       attachUrl,
       expiresAt: Number.MAX_SAFE_INTEGER,
-      timeout: 0 as unknown as ReturnType<typeof setTimeout>,
+      timeout: null,
     };
     this.processAttachTokens.set(token, attach);
     this.processTokenByMainWebSocket.set(mainWebSocket, token);
@@ -339,7 +339,7 @@ export class SSHSessionDO implements DurableObject {
   private deleteProcessAttachToken(token: string, expected?: AuxiliaryAttachToken): void {
     const attach = this.processAttachTokens.get(token);
     if (!attach || (expected && attach !== expected)) return;
-    clearTimeout(attach.timeout);
+    if (attach.timeout !== null) clearTimeout(attach.timeout);
     this.processAttachTokens.delete(token);
     if (this.processTokenByMainWebSocket.get(attach.mainWebSocket) === token) {
       this.processTokenByMainWebSocket.delete(attach.mainWebSocket);
@@ -349,7 +349,7 @@ export class SSHSessionDO implements DurableObject {
   private deleteSFTPAttachToken(token: string, expected?: SFTPAttachToken): void {
     const attach = this.sftpAttachTokens.get(token);
     if (!attach || (expected && attach !== expected)) return;
-    clearTimeout(attach.timeout);
+    if (attach.timeout !== null) clearTimeout(attach.timeout);
     this.sftpAttachTokens.delete(token);
     if (this.sftpTokenByMainWebSocket.get(attach.mainWebSocket) === token) {
       this.sftpTokenByMainWebSocket.delete(attach.mainWebSocket);

@@ -247,7 +247,6 @@ export class FileManager {
 
   attach(url: string): void {
     this.clearReconnectTimer();
-    this.reconnectAttempts = 0;
     this.reset();
     this.wantConnection = true;
     this.url = url;
@@ -274,6 +273,7 @@ export class FileManager {
 
     socket.addEventListener('open', () => {
       if (!this.isCurrent(socket, generation)) return;
+      this.reconnectAttempts = 0;
       this.init();
     });
     socket.addEventListener('message', (event: MessageEvent<SocketData>) => {
@@ -1228,13 +1228,26 @@ export class FileManager {
       zh: '文件管理连接已断开，正在重连…',
       en: 'File manager disconnected; reconnecting…',
     });
+    const attempts = this.reconnectAttempts;
     this.reconnectTimer = window.setTimeout(() => {
       this.reconnectTimer = null;
       if (!this.wantConnection || !this.url) return;
       try {
         this.attach(this.url);
       } catch {
+        // attach() → reset() zeroed the counter; restore so the next
+        // close handler's scheduleReconnect() continues accumulating.
+        if (this.wantConnection) {
+          this.reconnectAttempts = attempts;
+        }
         this.scheduleReconnect();
+        return;
+      }
+      // Successful attach(); reset() already zeroed the counter.
+      // Restore so that if a close fires before the 'open' handler
+      // can confirm the connection, the back-off chain continues.
+      if (this.wantConnection) {
+        this.reconnectAttempts = attempts;
       }
     }, delay);
   }

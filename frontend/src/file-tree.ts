@@ -143,7 +143,7 @@ export class FileTree {
    * Tree-level lifecycle epoch.
    *
    * `node.loadToken` only guards per-node races; it cannot observe that the
-   * entire tree was torn down (setReady(false) / destroy() / setRootPath())
+   * entire tree was torn down (setReady(false) / destroy())
    * while a fetch was in flight. Every whole-tree teardown bumps this counter,
    * so an awaiting `expandNode` continuation can tell that the node it owns
    * has been orphaned and must not touch the DOM, node state, or `onError`.
@@ -202,18 +202,6 @@ export class FileTree {
     this.focusedNode = this.root;
     this.selectedPath = null;
     this.renderRoot();
-  }
-
-  /** Switch the tree's root path (used when cwd escapes the current root). */
-  setRootPath(path: string): void {
-    this.rootPath = path;
-    if (this.ready) {
-      this.treeEpoch++;
-      this.root = this.createRootNode(path);
-      this.focusedNode = this.root;
-      this.selectedPath = null;
-      this.renderRoot();
-    }
   }
 
   /**
@@ -769,7 +757,8 @@ export class FileTree {
         void this.expandNode(node);
       }
     }
-    // Files/symlinks: select only, no right-side navigation
+    // Symlinks: navigate the right panel but are not expandable in the
+    // tree (isExpandable returns false). Files: select only, no navigation.
     // Unavailable directories: highlight but don't navigate (SFTP would
     // refuse and surface an error to the user).
   }
