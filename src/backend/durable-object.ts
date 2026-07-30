@@ -283,12 +283,13 @@ export class SSHSessionDO implements DurableObject {
       return Response.json({ error: 'Invalid process attachment token' }, { status: 401 });
     }
     const attach = this.processAttachTokens.get(token);
-    if (!attach || attach.expiresAt < Date.now() || attach.mainWebSocket.readyState !== WebSocket.OPEN) {
+    if (!attach || attach.mainWebSocket.readyState !== WebSocket.OPEN) {
       if (attach) this.deleteProcessAttachToken(token, attach);
       return Response.json({ error: 'Invalid or expired process attachment token' }, { status: 401 });
     }
     if (!attach.session) return Response.json({ error: 'SSH session is still initializing' }, { status: 409 });
-    this.deleteProcessAttachToken(token, attach);
+    // Keep the token valid after attach so the client can auto-reconnect the process monitor.
+    // It is deleted in cleanup() when the main SSH session closes.
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
@@ -316,12 +317,15 @@ export class SSHSessionDO implements DurableObject {
   }
 
   private registerProcessAttachToken(token: string, attachUrl: string, mainWebSocket: WebSocket): void {
-    const expiresAt = Date.now() + SFTP_ATTACH_TOKEN_TTL_MS;
+    // The process-monitor token intentionally lives for the lifetime of the main SSH
+    // session (it is removed in cleanup() when that session closes). This lets the client
+    // re-attach the process monitor after a transient drop instead of being locked out by a
+    // one-time token. The SSH session setup still gates attach on attach.session being ready.
     const attach: AuxiliaryAttachToken = {
       mainWebSocket,
       attachUrl,
-      expiresAt,
-      timeout: setTimeout(() => this.deleteProcessAttachToken(token, attach), SFTP_ATTACH_TOKEN_TTL_MS),
+      expiresAt: Number.MAX_SAFE_INTEGER,
+      timeout: 0 as unknown as ReturnType<typeof setTimeout>,
     };
     this.processAttachTokens.set(token, attach);
     this.processTokenByMainWebSocket.set(mainWebSocket, token);
