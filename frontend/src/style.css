@@ -1799,7 +1799,7 @@ button:disabled {
 
 .file-table {
   width: 100%;
-  min-width: 740px;
+  min-width: 240px;
   border-spacing: 0;
   table-layout: fixed;
   color: var(--text);
@@ -2356,10 +2356,6 @@ button:disabled {
 
   .file-actions {
     width: 100%;
-  }
-
-  .file-table {
-    min-width: 560px;
   }
 
   .process-table {
