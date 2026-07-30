@@ -50,6 +50,12 @@ interface TreeNode {
   element: HTMLElement | null;
   /** Depth in the tree (root = 0). */
   depth: number;
+  /**
+   * True if the node is on the path to cwd but its SFTP list failed
+   * (e.g. Permission denied). The node is rendered as a "locked" leaf —
+   * still visible to preserve the full path, but not expandable.
+   */
+  unavailable: boolean;
 }
 
 interface LocalizedText {
@@ -123,10 +129,21 @@ export class FileTree {
   /** Token to cancel a previous in-progress setCwd expansion (Risk 2). */
   private setCwdToken = 0;
   /**
+   * Map tracking in-flight expandNode promises keyed by node.
+   *
+   * When a second expandToPath call overlaps with an on-going expandNode
+   * fetch on the same node (e.g. sftp_ready and sftp_list_result both
+   * emitCwdChange), the second call retrieves the in-flight promise and
+   * awaits it instead of bailing out. This prevents the race condition
+   * where the second expandToPath breaks prematurely because the node
+   * was still 'loading'.
+   */
+  private inflightExpands = new Map<TreeNode, Promise<void>>();
+  /**
    * Tree-level lifecycle epoch.
    *
    * `node.loadToken` only guards per-node races; it cannot observe that the
-   * entire tree was torn down (setReady(false) / destroy() / setRootPath())
+   * entire tree was torn down (setReady(false) / destroy())
    * while a fetch was in flight. Every whole-tree teardown bumps this counter,
    * so an awaiting `expandNode` continuation can tell that the node it owns
    * has been orphaned and must not touch the DOM, node state, or `onError`.
@@ -187,18 +204,6 @@ export class FileTree {
     this.renderRoot();
   }
 
-  /** Switch the tree's root path (used when cwd escapes the current root). */
-  setRootPath(path: string): void {
-    this.rootPath = path;
-    if (this.ready) {
-      this.treeEpoch++;
-      this.root = this.createRootNode(path);
-      this.focusedNode = this.root;
-      this.selectedPath = null;
-      this.renderRoot();
-    }
-  }
-
   /**
    * Expand ancestor nodes along the path to `cwd` and highlight the target.
    * Uses setCwdToken to cancel a previous in-progress expansion (Risk 2).
@@ -206,6 +211,13 @@ export class FileTree {
   setCwd(cwd: string): void {
     this.selectedPath = cwd;
     this.setCwdToken++;
+    // Kick off root expansion immediately for visual feedback so aria-expanded
+    // changes to "true" (or shows a spinner) without waiting for the async
+    // SFTP fetch. silent=true  keeps the unavailable-path compatible with
+    // expandToPath.
+    if (this.root && this.root.state === 'collapsed') {
+      void this.expandNode(this.root, true);
+    }
     const token = this.setCwdToken;
     void this.expandToPath(cwd, token);
   }
@@ -242,6 +254,7 @@ export class FileTree {
       loadToken: 0,
       element: null,
       depth: 0,
+      unavailable: false,
     };
   }
 
@@ -260,12 +273,36 @@ export class FileTree {
       loadToken: 0,
       element: null,
       depth: parent.depth + 1,
+      unavailable: false,
     };
   }
 
-  /** Whether a node can be expanded (only directories). */
+  /**
+   * Create a synthetic "potentially available" child for the next path
+   * segment when the parent's list failed. The synthetic node starts
+   * without the unavailable flag — it will be marked unavailable on the
+   * next fetch attempt if that one also fails.
+   */
+  private createUnavailableChild(path: string, parent: TreeNode): TreeNode {
+    const name = path.slice(parent.path === '/' ? 1 : parent.path.length + 1);
+    return {
+      path,
+      name,
+      type: 'directory',
+      parent,
+      children: null,
+      state: 'collapsed',
+      isTruncated: false,
+      loadToken: 0,
+      element: null,
+      depth: parent.depth + 1,
+      unavailable: false,
+    };
+  }
+
+  /** Whether a node can be expanded (only directories, excludes unavailable). */
   private isExpandable(node: TreeNode): boolean {
-    return node.type === 'directory';
+    return node.type === 'directory' && !node.unavailable;
   }
 
   // ── Rendering ───────────────────────────────────────────────────────
@@ -310,6 +347,7 @@ export class FileTree {
     if (isSelected) row.classList.add('is-selected');
     if (node.state === 'loading') row.classList.add('is-loading');
     if (node.state === 'error') row.classList.add('is-error');
+    if (node.unavailable) row.classList.add('is-unavailable');
 
     row.style.setProperty('--file-tree-depth', String(node.depth));
     row.dataset.path = node.path;
@@ -317,12 +355,20 @@ export class FileTree {
 
     const expandable = this.isExpandable(node);
 
-    // Toggle / spinner / spacer
+    // Toggle / spinner / lock / spacer
     if (node.state === 'loading') {
       const spinner = document.createElement('span');
       spinner.className = 'file-tree-spinner';
       spinner.setAttribute('aria-hidden', 'true');
       row.append(spinner);
+    } else if (node.unavailable) {
+      // Lock icon for nodes whose SFTP list failed (e.g. Permission denied
+      // on an ancestor). Not expandable; preserves full path in the tree.
+      const lock = document.createElement('span');
+      lock.className = 'file-tree-lock';
+      lock.setAttribute('aria-hidden', 'true');
+      lock.textContent = '\u{1F512}'; // 🔒
+      row.append(lock);
     } else if (expandable) {
       const toggle = document.createElement('span');
       toggle.className = 'file-tree-toggle';
@@ -367,9 +413,9 @@ export class FileTree {
       row.append(retry);
     }
 
-    // ARIA expanded
+    // ARIA expanded: treat "loading" as expanded since the expand is in progress.
     if (expandable) {
-      row.setAttribute('aria-expanded', String(node.state === 'expanded'));
+      row.setAttribute('aria-expanded', String(node.state === 'expanded' || node.state === 'loading'));
     } else {
       row.removeAttribute('aria-expanded');
     }
@@ -437,8 +483,21 @@ export class FileTree {
    * - `loadToken`  — per-node: a newer expand/collapse superseded this fetch.
    * - `treeEpoch`  — per-tree: the whole tree was torn down while awaiting.
    */
-  private async expandNode(node: TreeNode): Promise<void> {
-    if (!this.isExpandable(node) || node.state === 'expanded' || node.state === 'loading') return;
+  private async expandNode(node: TreeNode, silent = false): Promise<void> {
+    // Not expandable or already expanded → no-op.
+    if (!this.isExpandable(node) || node.state === 'expanded') return;
+
+    // Node is currently loading — return the in-flight promise so callers
+    // (e.g. a second expandToPath) can await the result rather than
+    // bailing out prematurely. This fixes the race condition triggered
+    // when FileManager double-emits setCwd (sftp_ready + sftp_list_result).
+    if (node.state === 'loading') {
+      const inflight = this.inflightExpands.get(node);
+      if (inflight) return inflight;
+      // Defensive fallback: shouldn't happen if inflightExpands is always
+      // set before transitioning to 'loading'.
+      return;
+    }
 
     // Capture the tree generation this call belongs to.
     const epoch = this.treeEpoch;
@@ -448,26 +507,54 @@ export class FileTree {
     node.state = 'loading';
     this.refreshRowContent(node);
 
+    // Create the in-flight promise and register it so concurrent callers
+    // can await it instead of creating a duplicate fetch.
+    let resolve: () => void = () => {};
+    const promise = new Promise<void>((res) => { resolve = res; });
+    this.inflightExpands.set(node, promise);
+
     try {
       const result = await this.fetchEntries(node.path);
       // Tree-level guard: the tree was destroyed or rebuilt while awaiting,
       // so `node` is orphaned. Return without rolling back node.state —
       // the node died together with its tree and is unreachable.
-      if (epoch !== this.treeEpoch || !this.ready || !this.root) return;
+      if (epoch !== this.treeEpoch || !this.ready || !this.root) { resolve(); return; }
       // Per-node race-condition guard: if loadToken changed, this was superseded.
-      if (token !== node.loadToken) return;
+      if (token !== node.loadToken) { resolve(); return; }
 
       node.children = result.entries.map((entry) => this.createTreeNode(entry, node));
       node.isTruncated = result.isTruncated;
       node.state = 'expanded';
       this.refreshRowContent(node);
       this.renderChildren(node);
+      resolve();
     } catch (error) {
       // Tree-level guard MUST run before onError: a fetch rejected by the
       // teardown itself (rejectTreeLists on close/destroy) would otherwise
       // surface a bogus error toast for a session the user already left.
-      if (epoch !== this.treeEpoch || !this.ready || !this.root) return;
-      if (token !== node.loadToken) return;
+      if (epoch !== this.treeEpoch || !this.ready || !this.root) { resolve(); return; }
+      if (token !== node.loadToken) { resolve(); return; }
+
+      // ── Silent failure handling for setCwd auto-expansion ────────────
+      // When the tree is auto-walking to cwd and an ancestor fetch fails
+      // (e.g. restricted shell where / is unreadable), mark the node as
+      // unavailable instead of re-rooting. The walk will continue via a
+      // synthetic child in expandToPath, preserving the full path display.
+      // Manual expand (user click/keyboard) does NOT pass silent=true, so
+      // those errors still surface via the error path below.
+      if (silent) {
+        const cwd = this.selectedPath;
+        if (cwd && isDescendantPath(node.path, cwd)) {
+          node.unavailable = true;
+          node.state = 'collapsed';
+          node.children = null;
+          this.removeDescendantRows(node);
+          this.refreshRowContent(node);
+          resolve();
+          return;
+        }
+      }
+      // ── End silent handling ──────────────────────────────────────────
 
       node.state = 'error';
       node.children = null;
@@ -475,6 +562,14 @@ export class FileTree {
       this.refreshRowContent(node);
       const message = error instanceof Error ? error.message : String(error);
       this.onError?.(message);
+      resolve();
+    } finally {
+      // Clean up the inflight map entry, but only if our promise is still
+      // the one registered (prevents clobbering a new expand on the same
+      // node that started after this one completed/cleaned up).
+      if (this.inflightExpands.get(node) === promise) {
+        this.inflightExpands.delete(node);
+      }
     }
   }
 
@@ -499,41 +594,87 @@ export class FileTree {
   private async expandToPath(cwd: string, token: number): Promise<void> {
     if (!this.ready || !this.root) return;
 
-    // If cwd escapes the current root, switch root to cwd
-    if (!isDescendantPath(this.rootPath, cwd)) {
-      this.setRootPath(cwd);
-      if (token !== this.setCwdToken) return;
-      this.highlightNode(this.root);
-      this.focusedNode = this.root;
-      this.updateTabindex();
-      this.root.element?.scrollIntoView({ block: 'nearest' });
-      return;
-    }
-
-    let current = this.root;
     const segments = splitPathSegments(cwd);
+    let current = this.root;
 
     for (const segment of segments) {
-      if (token !== this.setCwdToken) return; // cancelled by a newer setCwd
-
-      // Skip the root segment (current is already at root)
-      if (segment === current.path) continue;
-
-      // Ensure current is expanded so we can search its children
-      if (current.state !== 'expanded') {
-        await this.expandNode(current);
-        if (token !== this.setCwdToken) return; // cancelled
+      if (token !== this.setCwdToken) return;
+      if (segment === current.path) {
+        // Even when the segment matches the current node (e.g. root "/" on
+        // initial load or setCwd("/")), we must still expand it so its
+        // children are rendered in the tree. Without this, clicking the root
+        // loads the right panel but the left tree stays collapsed.
+        if (current.state !== 'expanded') {
+          await this.expandNode(current, true);
+          if (token !== this.setCwdToken) return;
+        }
+        continue;
       }
 
-      // Find the child matching this path segment
+      // If current is unavailable, we can't see its real children.
+      // Create a synthetic child for the next segment so the walk can
+      // continue. The synthetic child starts as "potentially available"
+      // and will be tried on the next iteration.
+      if (current.unavailable) {
+        // Check if a synthetic child for this segment already exists
+        let synth = current.children?.find((c) => c.path === segment) ?? null;
+        if (!synth) {
+          synth = this.createUnavailableChild(segment, current);
+          if (!current.children) current.children = [];
+          current.children.push(synth);
+          this.renderChildren(current);
+        }
+        current = synth;
+        continue;
+      }
+
+      // Try to expand current (silent, no error UI on failure).
+      if (current.state !== 'expanded') {
+        await this.expandNode(current, true);
+        if (token !== this.setCwdToken) return;
+
+        // Expansion failed and marked current as unavailable: create
+        // a synthetic child for the next segment.
+        if (current.unavailable) {
+          let synth = current.children?.find((c) => c.path === segment) ?? null;
+          if (!synth) {
+            synth = this.createUnavailableChild(segment, current);
+            if (!current.children) current.children = [];
+            current.children.push(synth);
+            this.renderChildren(current);
+          }
+          current = synth;
+          continue;
+        }
+      }
+
+      // Find the real child matching the next segment.
       const child = current.children?.find((c) => c.path === segment);
-      if (!child) break; // path segment not found; highlight deepest ancestor
+      if (!child) break; // path segment not found in directory
       current = child;
     }
 
-    if (token !== this.setCwdToken) return; // cancelled
+    if (token !== this.setCwdToken) return;
 
-    // Highlight and scroll to the target node
+    // If the final node is a synthetic child of an unavailable parent,
+    // try expanding it (the loop's post-expansion check above may have
+    // created it and skipped to the next iteration, which then
+    // short-circuited because segment === current.path).
+    if (current.state === 'collapsed' && !current.unavailable && current.parent?.unavailable) {
+      await this.expandNode(current, true);
+      if (token !== this.setCwdToken) return;
+    }
+
+    // Expand the target directory itself (not just its ancestors) so its
+    // children are immediately rendered and aria-expanded is "true".
+    // This covers initial-connection setCwd where activateNode is never
+    // called — ancestors were expanded during the loop above; the target
+    // needs this extra step.
+    if (current.state === 'collapsed' && current.type === 'directory' && !current.unavailable) {
+      await this.expandNode(current, true);
+      if (token !== this.setCwdToken) return;
+    }
+
     this.highlightNode(current);
     this.focusedNode = current;
     this.updateTabindex();
@@ -605,10 +746,21 @@ export class FileTree {
     this.highlightNode(node);
     this.focusedNode = node;
     this.updateTabindex();
-    if (node.type === 'directory') {
+    if ((node.type === 'directory' || node.type === 'symlink') && !node.unavailable) {
       this.onNavigate(node.path);
+      // Expand the node in the tree immediately so aria-expanded flips to
+      // "true" (or shows a loading spinner) without waiting for the async
+      // setCwd → expandToPath round-trip that follows onNavigate.
+      // Only real directories are expandable; symlinks navigate the right
+      // panel but are not expanded in the tree (isExpandable returns false).
+      if (node.type === 'directory') {
+        void this.expandNode(node);
+      }
     }
-    // Files/symlinks: select only, no right-side navigation
+    // Symlinks: navigate the right panel but are not expandable in the
+    // tree (isExpandable returns false). Files: select only, no navigation.
+    // Unavailable directories: highlight but don't navigate (SFTP would
+    // refuse and surface an error to the user).
   }
 
   private handleKeydown(event: KeyboardEvent): void {

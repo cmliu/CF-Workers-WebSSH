@@ -20,10 +20,10 @@ export interface ConnectionPanelView {
   scrimVisible: boolean;
 }
 
-export function resolveConnectionPanel(open: boolean, mobile: boolean): ConnectionPanelView {
+export function resolveConnectionPanel(open: boolean): ConnectionPanelView {
   return {
-    expanded: !mobile || open,
-    drawerOpen: mobile && open,
-    scrimVisible: mobile && open,
+    expanded: open,
+    drawerOpen: open,
+    scrimVisible: open,
   };
 }

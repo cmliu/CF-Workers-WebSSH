@@ -393,6 +393,7 @@ let authorizationAbort: AbortController | null = null;
 let currentExpectedFingerprint = '';
 let currentRememberedFingerprint = '';
 let currentSessionSubtitle: LocalizedMessage = { zh: '选择目标并连接', en: 'Choose a target and connect' };
+let currentSessionId = '';
 let currentEventMessage: LocalizedMessage = { zh: 'Worker 运行时待命', en: 'Worker runtime standing by' };
 let currentFormError: LocalizedMessage | null = null;
 let passwordDirty = false;
@@ -402,8 +403,7 @@ let historyPasswordLoadGeneration = 0;
 let historyMutationSequence = 0;
 let keyFileReadGeneration = 0;
 const latestHistoryMutation = new Map<string, number>();
-const panelMedia = window.matchMedia('(max-width: 760px)');
-let panelOpen = !panelMedia.matches;
+let panelOpen = false;
 let fileManager: FileManager;
 let fileTree: FileTree;
 let processManager: ProcessManager;
@@ -1072,6 +1072,16 @@ function toast(message: string, kind: 'info' | 'error' = 'info'): void {
   window.setTimeout(() => item.remove(), 4_500);
 }
 
+function updateConnectionStatus(message: LocalizedMessage): void {
+  currentSessionSubtitle = message;
+  const text = localize(message);
+  ui.sessionSubtitle.textContent = text;
+  if (connectionState === 'connecting') {
+    const btnSpan = ui.connect.querySelector<HTMLElement>('span:last-child');
+    if (btnSpan) btnSpan.textContent = text;
+  }
+}
+
 function setState(state: ConnectionState, label?: string): void {
   connectionState = state;
   const stateLabel = label ?? ({
@@ -1098,6 +1108,7 @@ function setState(state: ConnectionState, label?: string): void {
   ui.connect.querySelector<HTMLElement>('.button-icon')!.textContent = control.danger ? 'x' : '>_';
   ui.connect.querySelector<HTMLElement>('span:last-child')!.textContent = controlLabel;
   ui.connect.setAttribute('aria-label', controlLabel);
+  ui.connect.title = currentSessionId || controlLabel;
 }
 
 function event(message: string, category = 'session', error = false, alternate?: string): void {
@@ -1130,13 +1141,13 @@ function fitTerminal(send = true): void {
         socket.send(JSON.stringify({ type: 'resize', cols: terminal.cols, rows: terminal.rows }));
       }
     } catch {
-      // The terminal can be temporarily dimensionless during a mobile drawer transition.
+      // The terminal can be temporarily dimensionless during a panel drawer transition.
     }
   });
 }
 
 function setPanelOpen(open: boolean): void {
-  const view = resolveConnectionPanel(open, panelMedia.matches);
+  const view = resolveConnectionPanel(open);
   panelOpen = view.expanded;
   if (!view.expanded && (connectionState === 'connecting' || connectionState === 'connected' || connectionState === 'disconnecting')) {
     invalidateHistoryPasswordLoad();
@@ -1193,13 +1204,12 @@ function markReady(message = bilingual('交互式 Shell 已就绪', 'Interactive
   if (connectionState === 'connected') return;
   invalidateHistoryPasswordLoad();
   setState('connected');
-  if (panelMedia.matches) setPanelOpen(false);
+  setPanelOpen(false);
   void saveConnectedProfile().catch(() => {
     toast(bilingual('连接成功，但无法更新历史记录。', 'Connected, but the history could not be updated.'), 'error');
   });
   startTimers();
-  currentSessionSubtitle = messageTranslation(message);
-  ui.sessionSubtitle.textContent = message;
+  updateConnectionStatus(messageTranslation(message));
   event(message, 'ready');
   if (currentInitialCommand && !initialCommandSent) {
     initialCommandSent = true;
@@ -1413,8 +1423,7 @@ function handleServerMessage(message: ServerMessage): void {
   if (type === 'status') {
     const text = bilingualServerMessage(message.message, message.event, 'SSH handshake in progress');
     event(text, message.event ?? 'status');
-    currentSessionSubtitle = messageTranslation(text);
-    ui.sessionSubtitle.textContent = text;
+    updateConnectionStatus(messageTranslation(text));
     if (message.event === 'shell_ready' || message.event === 'ready') markReady(text);
   }
 }
@@ -1457,6 +1466,7 @@ function sendTerminalData(data: string): void {
 function failActiveConnection(activeSocket: WebSocket | null, closeReason: string, displayReason: LocalizedMessage): void {
   if (activeSocket && socket === activeSocket) socket = null;
   connectGeneration++;
+  currentSessionId = '';
   pendingHistory = null;
   authorizationAbort?.abort();
   authorizationAbort = null;
@@ -1468,8 +1478,7 @@ function failActiveConnection(activeSocket: WebSocket | null, closeReason: strin
   processManager.reset();
   clearHostKeyPrompt();
   invalidateHistoryPasswordLoad();
-  currentSessionSubtitle = displayReason;
-  ui.sessionSubtitle.textContent = localize(displayReason);
+  updateConnectionStatus(displayReason);
   setState('error');
   if (activeSocket && activeSocket.readyState < WebSocket.CLOSING) activeSocket.close(CLIENT_CLOSE_SESSION_ERROR, closeReason);
 }
@@ -1537,8 +1546,7 @@ async function connect(): Promise<void> {
   awaitingHostKeyDecision = false;
   decoder = createDecoder(ui.encoding.value);
   ui.sessionTitle.textContent = currentTargetLabel;
-  currentSessionSubtitle = localized('正在授权 Worker 会话...', 'Authorizing Worker session...');
-  ui.sessionSubtitle.textContent = localize(currentSessionSubtitle);
+  updateConnectionStatus(localized('正在授权 Worker 会话...', 'Authorizing Worker session...'));
   ui.metricRtt.textContent = '--';
   ui.metricHostKey.textContent = '--';
   event(bilingual(`正在连接 ${currentTargetLabel}`, `Starting ${currentTargetLabel}`), 'connect');
@@ -1554,6 +1562,7 @@ async function connect(): Promise<void> {
     pendingHistory = { generation, target: currentTargetKey, profile: historyProfile };
     const ticketRequest = issueTicket(abortController.signal);
     const { ticket, sessionId } = await ticketRequest;
+    currentSessionId = sessionId;
     if (authorizationAbort === abortController) authorizationAbort = null;
     if (generation !== connectGeneration) return;
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -1585,8 +1594,7 @@ async function connect(): Promise<void> {
       else config.privateKey = privateKey;
       if (pinnedKey) config.expectedFingerprint = pinnedKey;
       activeSocket.send(JSON.stringify(config));
-      currentSessionSubtitle = localized('正在打开 TCP 连接...', 'Opening TCP connection...');
-      ui.sessionSubtitle.textContent = localize(currentSessionSubtitle);
+      updateConnectionStatus(localized('正在打开 TCP 连接...', 'Opening TCP connection...'));
       event(bilingual('WebSocket 已建立，正在打开 SSH 传输。', 'WebSocket established; opening SSH transport.'), 'transport');
     }, { once: true });
     activeSocket.addEventListener('message', (socketEvent) => {
@@ -1603,6 +1611,7 @@ async function connect(): Promise<void> {
     activeSocket.addEventListener('close', (closeEvent) => {
       if (socket !== activeSocket) return;
       socket = null;
+      currentSessionId = '';
       pendingHistory = null;
       currentExpectedFingerprint = '';
       currentRememberedFingerprint = '';
@@ -1619,8 +1628,7 @@ async function connect(): Promise<void> {
           ? bilingual('会话已关闭。', 'Session closed.')
           : bilingual(`会话已关闭（${closeEvent.code}）。`, `Session closed (${closeEvent.code}).`);
       event(reason, 'disconnect', closeEvent.code !== 1000 && closeEvent.code !== 1005);
-      currentSessionSubtitle = messageTranslation(reason);
-      ui.sessionSubtitle.textContent = reason;
+      updateConnectionStatus(messageTranslation(reason));
       setState(closeEvent.code === 1000 || closeEvent.code === 1005 ? 'idle' : 'error');
       if (wasActive) toast(reason, closeEvent.code === 1000 || closeEvent.code === 1005 ? 'info' : 'error');
     });
@@ -1646,6 +1654,7 @@ function disconnect(reason = bilingual('已由用户断开连接', 'Disconnected
   if (connectionState === 'disconnecting') return;
   const generation = ++connectGeneration;
   setState('disconnecting');
+  currentSessionId = '';
   pendingHistory = null;
   authorizationAbort?.abort();
   authorizationAbort = null;
@@ -1659,8 +1668,7 @@ function disconnect(reason = bilingual('已由用户断开连接', 'Disconnected
   invalidateHistoryPasswordLoad();
   currentExpectedFingerprint = '';
   currentRememberedFingerprint = '';
-  currentSessionSubtitle = messageTranslation(reason);
-  ui.sessionSubtitle.textContent = reason;
+  updateConnectionStatus(messageTranslation(reason));
   event(reason, 'disconnect');
   let settled = false;
   const finish = (): void => {
@@ -1947,12 +1955,11 @@ window.addEventListener('beforeunload', () => {
   socket?.close(1000, 'Page closed');
 });
 document.addEventListener('keydown', (keyEvent) => {
-  if (keyEvent.key === 'Escape' && panelMedia.matches && panelOpen && !ui.hostKeyDialog.open) {
+  if (keyEvent.key === 'Escape' && panelOpen && !ui.hostKeyDialog.open) {
     setPanelOpen(false);
     ui.panelToggle.focus();
   }
 });
-panelMedia.addEventListener('change', (mediaEvent) => setPanelOpen(!mediaEvent.matches));
 
 let storedTheme: string | null = null;
 try { storedTheme = localStorage.getItem(THEME_STORAGE_KEY); } catch { /* Storage can be disabled. */ }
