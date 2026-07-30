@@ -223,6 +223,13 @@ export class FileTree {
   setCwd(cwd: string): void {
     this.selectedPath = cwd;
     this.setCwdToken++;
+    // Kick off root expansion immediately for visual feedback so aria-expanded
+    // changes to "true" (or shows a spinner) without waiting for the async
+    // SFTP fetch. silent=true  keeps the unavailable-path compatible with
+    // expandToPath.
+    if (this.root && this.root.state === 'collapsed') {
+      void this.expandNode(this.root, true);
+    }
     const token = this.setCwdToken;
     void this.expandToPath(cwd, token);
   }
@@ -418,9 +425,9 @@ export class FileTree {
       row.append(retry);
     }
 
-    // ARIA expanded
+    // ARIA expanded: treat "loading" as expanded since the expand is in progress.
     if (expandable) {
-      row.setAttribute('aria-expanded', String(node.state === 'expanded'));
+      row.setAttribute('aria-expanded', String(node.state === 'expanded' || node.state === 'loading'));
     } else {
       row.removeAttribute('aria-expanded');
     }
