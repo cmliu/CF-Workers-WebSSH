@@ -46,6 +46,9 @@ export interface SFTPEntry {
   group?: string;
 }
 
+/** Listener invoked whenever the FileManager's current working directory changes. */
+export type CwdChangeListener = (cwd: string) => void;
+
 interface LocalizedText {
   zh: string;
   en: string;
@@ -209,6 +212,14 @@ export class FileManager {
   private uploadConfirmationPending = false;
   private messageQueue: Promise<void> = Promise.resolve();
   private statusCopy: LocalizedText = DISCONNECTED;
+  /** Pending tree-view directory fetch promises, keyed by `tree-` prefixed requestId. */
+  private treeLists = new Map<string, {
+    resolve: (value: { path: string; entries: SFTPEntry[]; isTruncated: boolean }) => void;
+    reject: (error: Error) => void;
+    generation: number;
+  }>();
+  /** Registered cwd-change listeners, notified on every successful cwd mutation. */
+  private cwdListeners = new Set<CwdChangeListener>();
 
   constructor(options: FileManagerOptions) {
     this.elements = options.elements;
@@ -265,6 +276,7 @@ export class FileManager {
       this.abortTransfers(false);
       this.pending.clear();
       this.activeListRequest = null;
+      this.rejectTreeLists(new Error('SFTP connection closed'));
       this.renderDisconnected(true, this.describeClose(event));
     });
   }
@@ -283,6 +295,7 @@ export class FileManager {
     this.uploadConfirmationPending = false;
     this.pending.clear();
     this.activeListRequest = null;
+    this.rejectTreeLists(new Error('SFTP session reset'));
     this.abortTransfers(false);
     if (socket) {
       if (socket.readyState === WebSocket.OPEN) {
@@ -301,6 +314,7 @@ export class FileManager {
 
   destroy(): void {
     this.reset();
+    this.cwdListeners.clear();
     this.bindings.abort();
   }
 
@@ -337,6 +351,39 @@ export class FileManager {
     this.updateStatusText(this.statusCopy);
     this.renderEntries();
     this.updateProgressLanguage();
+  }
+
+  /**
+   * Fetch directory entries for the tree view **without** disturbing the
+   * right-side panel (cwd, history, activeListRequest, or rendered entries).
+   * Uses a `tree-` prefixed requestId so handleListResult / handleServerError
+   * route the response to the tree channel instead of the normal list flow.
+   */
+  fetchDirectoryEntries(path: string): Promise<{ path: string; entries: SFTPEntry[]; isTruncated: boolean }> {
+    if (!this.ready || !this.isSocketOpen()) {
+      return Promise.reject(new Error('SFTP not ready'));
+    }
+    let normalized: string;
+    try {
+      normalized = normalizePath(path);
+    } catch {
+      return Promise.reject(new Error('Invalid path'));
+    }
+    const requestId = `tree-${this.generation}-${++this.requestSequence}`;
+    return new Promise((resolve, reject) => {
+      this.treeLists.set(requestId, { resolve, reject, generation: this.generation });
+      this.send({ type: 'sftp_list', requestId, path: normalized });
+    });
+  }
+
+  /**
+   * Register a listener that fires whenever the current working directory
+   * changes (after a successful list navigation or sftp_ready). Returns an
+   * unsubscribe function.
+   */
+  onCwdChange(listener: CwdChangeListener): () => void {
+    this.cwdListeners.add(listener);
+    return () => { this.cwdListeners.delete(listener); };
   }
 
   async upload(file: File, destination?: string): Promise<void> {
@@ -555,6 +602,7 @@ export class FileManager {
     try { cwd = normalizePath(typeof message.cwd === 'string' ? message.cwd : '/'); } catch { cwd = '/'; }
     this.ready = true;
     this.cwd = cwd;
+    this.emitCwdChange(cwd);
     this.homePath = cwd;
     this.history = [cwd];
     this.historyIndex = 0;
@@ -583,6 +631,11 @@ export class FileManager {
 
   private handleListResult(message: JsonRecord): void {
     const requestId = typeof message.requestId === 'string' ? message.requestId : '';
+    // === Tree-view fetch: route to tree channel, never enter right-side rendering ===
+    if (requestId.startsWith('tree-')) {
+      this.resolveTreeList(message, requestId);
+      return;
+    }
     const pending = this.pending.get(requestId);
     if (!pending || pending.generation !== this.generation || pending.operation !== 'list') return;
     this.pending.delete(requestId);
@@ -604,6 +657,7 @@ export class FileManager {
       return left.name.localeCompare(right.name, this.isChinese() ? 'zh-CN' : 'en', { numeric: true, sensitivity: 'base' });
     });
     this.cwd = path;
+    this.emitCwdChange(path);
     if (pending.historyMode === 'push' && this.history[this.historyIndex] !== path) {
       this.history = this.history.slice(0, this.historyIndex + 1);
       this.history.push(path);
@@ -912,6 +966,11 @@ export class FileManager {
 
   private handleServerError(message: JsonRecord): void {
     const requestId = typeof message.requestId === 'string' ? message.requestId : '';
+    // === Tree-view fetch error: route to tree channel, never enter right-side error handling ===
+    if (requestId.startsWith('tree-')) {
+      this.rejectTreeList(message, requestId);
+      return;
+    }
     const pending = requestId ? this.pending.get(requestId) : undefined;
     if (requestId && (!pending || pending.generation !== this.generation)) return;
     if (requestId) this.pending.delete(requestId);
@@ -931,6 +990,54 @@ export class FileManager {
       this.abortTransfers(true);
     }
     this.showError(serverMessage);
+  }
+
+  /** Resolve a pending tree-view fetch promise with parsed, sorted entries. */
+  private resolveTreeList(message: JsonRecord, requestId: string): void {
+    const entry = this.treeLists.get(requestId);
+    if (!entry || entry.generation !== this.generation) return;
+    this.treeLists.delete(requestId);
+    let path: string;
+    try { path = normalizePath(typeof message.path === 'string' ? message.path : ''); }
+    catch { entry.reject(new Error('Invalid path in tree list result')); return; }
+    if (!Array.isArray(message.entries)) {
+      entry.reject(new Error('Invalid entries in tree list result'));
+      return;
+    }
+    const entries = message.entries
+      .map((raw) => this.parseEntry(raw))
+      .filter((item): item is SFTPEntry => item !== null);
+    entries.sort((left, right) => {
+      if (left.type === 'directory' && right.type !== 'directory') return -1;
+      if (left.type !== 'directory' && right.type === 'directory') return 1;
+      return left.name.localeCompare(right.name, this.isChinese() ? 'zh-CN' : 'en', { numeric: true, sensitivity: 'base' });
+    });
+    entry.resolve({ path, entries, isTruncated: message.isTruncated === true });
+  }
+
+  /** Reject a single pending tree-view fetch promise with the server error message. */
+  private rejectTreeList(message: JsonRecord, requestId: string): void {
+    const entry = this.treeLists.get(requestId);
+    if (!entry || entry.generation !== this.generation) return;
+    this.treeLists.delete(requestId);
+    const fallback = this.localize({ zh: '文件操作失败。', en: 'The file operation failed.' });
+    const serverMessage = typeof message.message === 'string' && message.message ? message.message : fallback;
+    entry.reject(new Error(serverMessage));
+  }
+
+  /** Reject all pending tree-view fetch promises (used on reset / close / destroy). */
+  private rejectTreeLists(error: Error): void {
+    this.treeLists.forEach((entry) => {
+      entry.reject(error);
+    });
+    this.treeLists.clear();
+  }
+
+  /** Notify all registered cwd-change listeners. Listener errors are swallowed. */
+  private emitCwdChange(cwd: string): void {
+    this.cwdListeners.forEach((listener) => {
+      try { listener(cwd); } catch { /* listener errors are non-fatal */ }
+    });
   }
 
   private handleTransferCancelled(message: JsonRecord, operation: 'upload' | 'download'): void {
