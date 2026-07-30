@@ -864,8 +864,16 @@ button:disabled {
   align-items: center;
   justify-content: center;
   gap: 8px;
+  min-width: 0;
   background: var(--accent);
   color: #06130e;
+}
+
+.primary-button > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 [data-theme='light'] .primary-button {

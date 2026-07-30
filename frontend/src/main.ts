@@ -1082,6 +1082,11 @@ function updateConnectionStatus(message: LocalizedMessage): void {
   }
 }
 
+function formatSessionId(id: string): string {
+  if (!id) return '';
+  return id.length > 8 ? `${id.slice(0, 8)}…` : id;
+}
+
 function setState(state: ConnectionState, label?: string): void {
   connectionState = state;
   const stateLabel = label ?? ({
@@ -1095,10 +1100,11 @@ function setState(state: ConnectionState, label?: string): void {
   ui.liveOrbLabel.textContent = stateLabel;
   ui.liveOrb.title = stateLabel;
   const control = resolveConnectionControl(state, historyPasswordLoading);
+  const sessionPrefix = formatSessionId(currentSessionId);
   const controlLabel = control.action === 'cancel'
     ? bilingual('取消连接', 'Cancel connection')
     : control.action === 'disconnect'
-      ? (currentSessionId ? `${currentSessionId} ${bilingual('断开', 'Disconnect')}` : bilingual('断开', 'Disconnect'))
+      ? (sessionPrefix ? `${sessionPrefix} ${bilingual('断开', 'Disconnect')}` : bilingual('断开', 'Disconnect'))
       : control.action === 'disconnecting'
         ? bilingual('断开中...', 'Disconnecting...')
         : bilingual('连接', 'Connect');
@@ -1108,6 +1114,7 @@ function setState(state: ConnectionState, label?: string): void {
   ui.connect.querySelector<HTMLElement>('.button-icon')!.textContent = control.danger ? 'x' : '>_';
   ui.connect.querySelector<HTMLElement>('span:last-child')!.textContent = controlLabel;
   ui.connect.setAttribute('aria-label', controlLabel);
+  ui.connect.title = currentSessionId || controlLabel;
 }
 
 function event(message: string, category = 'session', error = false, alternate?: string): void {
