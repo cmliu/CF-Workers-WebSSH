@@ -437,7 +437,7 @@ export class FileTree {
    * - `loadToken`  — per-node: a newer expand/collapse superseded this fetch.
    * - `treeEpoch`  — per-tree: the whole tree was torn down while awaiting.
    */
-  private async expandNode(node: TreeNode): Promise<void> {
+  private async expandNode(node: TreeNode, silent = false): Promise<void> {
     if (!this.isExpandable(node) || node.state === 'expanded' || node.state === 'loading') return;
 
     // Capture the tree generation this call belongs to.
@@ -468,6 +468,32 @@ export class FileTree {
       // surface a bogus error toast for a session the user already left.
       if (epoch !== this.treeEpoch || !this.ready || !this.root) return;
       if (token !== node.loadToken) return;
+
+      // ── Silent re-rooting for setCwd auto-expansion ─────────────────
+      // When setCwd triggers expandToPath and an ancestor node fetch fails
+      // (e.g. Permission denied on root in a restricted shell), silently
+      // re-root the tree to cwd so users can still browse their accessible
+      // directory. Manual expand (user click/keyboard) does NOT pass
+      // silent=true, so those errors still surface via the error path below.
+      if (silent) {
+        const cwd = this.selectedPath;
+        if (cwd && isDescendantPath(node.path, cwd)) {
+          if (node.path !== cwd) {
+            // Failed node is a strict ancestor of cwd: switch root to cwd
+            // then expand the new root so the user sees their directory.
+            this.setRootPath(cwd);
+            const newRoot = this.root;
+            if (newRoot) void this.expandNode(newRoot);
+          } else {
+            // Failed node is cwd itself: leave it as a collapsed leaf
+            // without surfacing an error.
+            node.state = 'collapsed';
+            this.refreshRowContent(node);
+          }
+          return;
+        }
+      }
+      // ── End silent re-rooting ────────────────────────────────────────
 
       node.state = 'error';
       node.children = null;
@@ -521,7 +547,7 @@ export class FileTree {
 
       // Ensure current is expanded so we can search its children
       if (current.state !== 'expanded') {
-        await this.expandNode(current);
+        await this.expandNode(current, true);
         if (token !== this.setCwdToken) return; // cancelled
       }
 
