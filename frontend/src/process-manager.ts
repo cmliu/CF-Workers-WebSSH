@@ -52,9 +52,14 @@ interface ProcessManagerOptions {
   elements: ProcessManagerElements;
   getLanguage: () => 'zh-CN' | 'en';
   onError: (message: string) => void;
+  onReconnect?: (zh: string, en: string) => void;
 }
 
 const MAX_PROCESSES = 512;
+// Auto-reconnect backoff for the process monitor after an unexpected drop.
+const RECONNECT_BASE_MS = 1_000;
+const RECONNECT_MAX_MS = 15_000;
+const RECONNECT_MAX_ATTEMPTS = 10;
 
 function finitePercent(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 10_000;
@@ -135,17 +140,25 @@ export class ProcessManager {
   private readonly elements: ProcessManagerElements;
   private readonly getLanguage: () => 'zh-CN' | 'en';
   private readonly onError: (message: string) => void;
+  private readonly onReconnect: ((zh: string, en: string) => void) | undefined;
   private socket: WebSocket | null = null;
   private generation = 0;
   private snapshot: ProcessSnapshot | null = null;
   private sortKey: ProcessSortKey = 'cpuPercent';
   private sortDirection: SortDirection = 'descending';
   private readonly progressAnimations = new Map<HTMLProgressElement, number>();
+  // Whether the process monitor should stay connected for the current SSH session. Set false
+  // when the user tears the session down (reset) so an unexpected drop is not mistaken for one.
+  private wantConnection = false;
+  private url: string | null = null;
+  private reconnectTimer: number | null = null;
+  private reconnectAttempts = 0;
 
   constructor(options: ProcessManagerOptions) {
     this.elements = options.elements;
     this.getLanguage = options.getLanguage;
     this.onError = options.onError;
+    this.onReconnect = options.onReconnect;
     this.elements.panel.addEventListener('click', (event) => {
       const button = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-process-sort]');
       if (!button) return;
@@ -155,6 +168,8 @@ export class ProcessManager {
   }
 
   attach(url: string): void {
+    this.wantConnection = true;
+    this.url = url;
     this.resetSocket();
     const target = new URL(url, window.location.href);
     if (target.origin !== window.location.origin || target.pathname !== '/api/processes') {
@@ -167,6 +182,7 @@ export class ProcessManager {
     this.setStatus('正在启动进程监控…', 'Starting process monitor…');
     socket.addEventListener('open', () => {
       if (!this.isCurrent(socket, generation)) return;
+      this.reconnectAttempts = 0;
       socket.send(JSON.stringify({ type: 'process_start' }));
     });
     socket.addEventListener('message', (event) => {
@@ -181,12 +197,19 @@ export class ProcessManager {
       if (!this.isCurrent(socket, generation)) return;
       this.socket = null;
       if (event.code !== 1000 && event.code !== 1005) {
-        this.showError('进程监控已意外停止。', 'Process monitor stopped unexpectedly.');
+        // Unexpected drop. Auto-reconnect unless the user intentionally tore the session down.
+        if (this.wantConnection) {
+          this.scheduleReconnect();
+        } else {
+          this.showError('进程监控已意外停止。', 'Process monitor stopped unexpectedly.');
+        }
       }
     });
   }
 
   reset(): void {
+    this.wantConnection = false;
+    this.clearReconnectTimer();
     this.resetSocket();
     this.snapshot = null;
     this.render();
@@ -407,6 +430,37 @@ export class ProcessManager {
     if (!socket) return;
     if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'process_stop' }));
     if (socket.readyState < WebSocket.CLOSING) socket.close(1000, 'Process monitor reset');
+  }
+
+  private scheduleReconnect(): void {
+    if (!this.wantConnection || !this.url || this.reconnectTimer !== null) return;
+    this.reconnectAttempts++;
+    if (this.reconnectAttempts > RECONNECT_MAX_ATTEMPTS) {
+      this.reconnectAttempts = 0;
+      this.showError('进程监控已意外停止。', 'Process monitor stopped unexpectedly.');
+      return;
+    }
+    const delay = Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * (2 ** (this.reconnectAttempts - 1)));
+    if (this.reconnectAttempts === 1 && this.onReconnect) {
+      this.onReconnect('进程监控已意外停止，正在尝试自动重连…', 'Process monitor stopped unexpectedly; attempting to reconnect automatically…');
+    }
+    this.setStatus('进程监控连接已断开，正在重连…', 'Process monitor disconnected; reconnecting…');
+    this.reconnectTimer = window.setTimeout(() => {
+      this.reconnectTimer = null;
+      if (!this.wantConnection || !this.url) return;
+      try {
+        this.attach(this.url);
+      } catch {
+        this.scheduleReconnect();
+      }
+    }, delay);
+  }
+
+  private clearReconnectTimer(): void {
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
   }
 
   private isCurrent(socket: WebSocket, generation: number): boolean {

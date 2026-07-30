@@ -430,6 +430,7 @@ processManager = new ProcessManager({
   elements: collectProcessManagerElements(),
   getLanguage: () => currentLanguage,
   onError: (message) => event(message, 'process', true),
+  onReconnect: (zh, en) => event(bilingual(zh, en), 'process'),
 });
 
 function terminalTheme(): Record<string, string> {
