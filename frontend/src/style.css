@@ -1648,15 +1648,16 @@ button:disabled {
   white-space: nowrap;
 }
 
-.process-table th:first-child { width: 8%; }
+.process-table th:first-child { width: 7%; }
 .process-table th:nth-child(2) { width: 8%; }
 .process-table th:nth-child(3) { width: 8%; }
 .process-table th:nth-child(4),
 .process-table th:nth-child(5) { width: 7%; }
 .process-table th:nth-child(6) { width: 6%; }
 .process-table th:nth-child(7) { width: 9%; }
-.process-table th:nth-child(8) { width: 47%; text-align: center; }
+.process-table th:nth-child(8) { width: 41%; text-align: center; }
 .process-table th:nth-child(8) .process-sort { text-align: center; }
+.process-table th:nth-child(9) { width: 8%; text-align: center; }
 
 .process-sort {
   position: relative;
@@ -1698,6 +1699,8 @@ button:disabled {
 .process-table td:not(:last-child) {
   text-align: right;
 }
+
+.process-table td:nth-child(8) { text-align: left; }
 
 .process-table td:last-child {
   text-align: left;
@@ -2209,6 +2212,199 @@ button:disabled {
 .dialog-actions .primary-button,
 .dialog-actions .secondary-button {
   flex: 0 0 auto;
+}
+
+/* Process table "Actions" column */
+.process-table th.process-kill-column {
+  padding: 0 4px;
+}
+
+.process-kill-cell {
+  padding: 0 4px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.process-copyable {
+  cursor: pointer;
+  user-select: none;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.process-copyable:hover,
+.process-copyable:focus-visible {
+  background: var(--surface-2);
+  color: var(--accent);
+  outline: none;
+}
+
+.process-copyable:active {
+  background: color-mix(in srgb, var(--accent) 15%, var(--surface-2));
+}
+
+.process-kill-button {
+  display: inline-grid;
+  min-width: 50px;
+  height: 20px;
+  padding: 0 8px;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--danger) 28%, var(--border));
+  border-radius: 5px;
+  background: transparent;
+  color: var(--danger);
+  font-family: var(--sans);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+
+.process-kill-button:hover:not(:disabled),
+.process-kill-button:focus-visible:not(:disabled) {
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--border));
+  background: var(--danger-dim);
+  color: var(--danger);
+  outline: none;
+}
+
+.process-kill-button:focus-visible {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--danger) 35%, transparent);
+}
+
+.process-kill-button[disabled] {
+  cursor: not-allowed;
+  opacity: 0.55;
+  background: transparent;
+}
+
+/* Process-kill confirmation dialog — mirrors the host-key-dialog layout */
+.process-kill-dialog {
+  width: min(460px, calc(100vw - 28px));
+  max-height: calc(100dvh - 28px);
+  overflow-y: auto;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--danger) 48%, var(--border));
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.58);
+  color: var(--text);
+}
+
+.process-kill-dialog::backdrop {
+  background: rgba(2, 6, 9, 0.76);
+  -webkit-backdrop-filter: blur(5px);
+  backdrop-filter: blur(5px);
+}
+
+.process-kill-dialog form {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 14px 16px;
+  padding: 22px;
+}
+
+.process-kill-dialog .dialog-icon {
+  border-color: color-mix(in srgb, var(--danger) 52%, var(--border));
+  background: var(--danger-dim);
+  color: var(--danger);
+}
+
+.process-kill-dialog .eyebrow,
+.process-kill-dialog h2 {
+  color: var(--danger);
+}
+
+.process-kill-dialog h2 {
+  margin: 0 0 7px;
+  font-size: 18px;
+}
+
+.process-kill-dialog p:not(.eyebrow) {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.process-kill-dialog dl,
+.process-kill-dialog .process-kill-result,
+.process-kill-dialog .dialog-actions {
+  grid-column: 1 / -1;
+}
+
+.process-kill-dialog dl {
+  display: grid;
+  gap: 1px;
+  overflow: hidden;
+  margin: 2px 0 0;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--border-soft);
+}
+
+.process-kill-dialog dl div {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  gap: 12px;
+  padding: 9px 11px;
+  background: var(--panel);
+}
+
+.process-kill-dialog dt {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.process-kill-dialog dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.process-kill-dialog dd.process-kill-command {
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 80px;
+  overflow-y: auto;
+}
+
+.process-kill-result {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface-2);
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 140px;
+  overflow-y: auto;
+}
+
+.process-kill-result[data-state='success'] {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface-2));
+  color: var(--accent);
+}
+
+.process-kill-result[data-state='error'] {
+  border-color: color-mix(in srgb, var(--danger) 48%, var(--border));
+  background: var(--danger-dim);
+  color: var(--danger);
+}
+
+@media (max-width: 760px) {
+  .process-kill-dialog dl div {
+    grid-template-columns: 72px minmax(0, 1fr);
+  }
 }
 
 .panel-scrim {

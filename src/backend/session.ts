@@ -63,6 +63,22 @@ interface PendingProcessChannelOpen {
   timeout: ReturnType<typeof setTimeout> | null;
   cancelled: boolean;
 }
+interface PendingProcessKillChannel {
+  readonly channelID: number;
+  readonly channel: SSHChannel;
+  readonly requestId: string;
+  readonly pid: number;
+  timeout: ReturnType<typeof setTimeout> | null;
+  cancelled: boolean;
+  openConfirmed: boolean;
+  stdoutDecoder: TextDecoder;
+  stderrDecoder: TextDecoder;
+  stdout: string;
+  stderr: string;
+  stdoutBytes: number;
+  stderrBytes: number;
+  finalized: boolean;
+}
 const LOCAL_WINDOW_THRESHOLD = 512 * 1024;
 const MAX_VERSION_BYTES = 8192;
 const MAX_QUEUED_INPUT = 1024 * 1024;
@@ -70,6 +86,11 @@ const MAX_QUEUED_SFTP_UPLOAD = 1024 * 1024;
 const SFTP_CHANNEL_OPEN_TIMEOUT_MS = 15_000;
 const PROCESS_CHANNEL_OPEN_TIMEOUT_MS = 15_000;
 const PROCESS_MAX_BUFFER_BYTES = 2 * 1024 * 1024;
+const PROCESS_KILL_CHANNEL_OPEN_TIMEOUT_MS = 15_000;
+// Bound the per-kill stdout/stderr payload returned to the browser. `kill` usually produces no
+// output on success, but a hostile or buggy server could dump arbitrary data through the exec
+// channel; cap the bytes we keep per stream so one bad request cannot exhaust worker memory.
+const PROCESS_KILL_MAX_BUFFER_BYTES = 4 * 1024;
 const PROCESS_SNAPSHOT_MARKER = '__CF_WEBSSH_TOP_SNAPSHOT__';
 // Octal escapes keep the delimiter itself out of the command line shown by top.
 // `top` flags differ across platforms: Linux procps uses `-n 1` (1 iteration) + `-c` (full command line),
@@ -139,6 +160,9 @@ export class SSHSession {
   private processBuffer = '';
   private processDecoder = new TextDecoder();
   private pendingProcessChannelOpen: PendingProcessChannelOpen | null = null;
+  // Concurrent `kill -TERM <pid>` requests, keyed by local channel ID. Each request gets its
+  // own exec channel so the top-monitor channel stays undisturbed.
+  private readonly pendingProcessKillChannels = new Map<number, PendingProcessKillChannel>();
   private ignoreNextKexPacket = false;
   private inputQueue: Uint8Array[] = [];
   private queueHeadOffset = 0;
@@ -216,6 +240,10 @@ export class SSHSession {
     this.clearPendingProcessChannelOpen();
     this.processChannel = null;
     this.processBuffer = '';
+    for (const kill of this.pendingProcessKillChannels.values()) {
+      if (kill.timeout) clearTimeout(kill.timeout);
+    }
+    this.pendingProcessKillChannels.clear();
     this.channels.clear();
     try { this.sftpWebSocket?.close(normal ? 1000 : 1011, normal ? 'SSH session closed' : 'SSH session failed'); } catch { /* already closed */ }
     this.sftpWebSocket = null;
@@ -615,6 +643,22 @@ export class SSHSession {
         if (this.phase !== 'pty') throw new Error('Unexpected shell channel open confirmation');
         this.pendingChannelRequest = 'pty';
         await this.sendEncrypted(channel.buildPTYRequest(this.config.cols, this.config.rows, this.config.term));
+      } else if (this.pendingProcessKillChannels.has(channelID)) {
+        const kill = this.pendingProcessKillChannels.get(channelID)!;
+        kill.openConfirmed = true;
+        if (kill.timeout) { clearTimeout(kill.timeout); kill.timeout = null; }
+        if (kill.cancelled || this.processWebSocket === null) {
+          await this.sendAuxiliaryChannelClose(channel);
+        } else {
+          try {
+            // The PID is a validated safe integer (1..2^31-1); interpolation is safe because
+            // its decimal representation cannot contain shell metacharacters.
+            await this.sendEncrypted(channel.buildExecRequest(`kill -TERM ${kill.pid}`));
+          } catch (error) {
+            this.finalizeProcessKill(kill, error instanceof Error ? error.message : String(error));
+            await this.sendAuxiliaryChannelClose(channel);
+          }
+        }
       } else if (channel === this.sftpChannel && this.sftpHandler && !this.pendingSFTPChannelOpen?.cancelled) {
         try {
           await this.sendEncrypted(channel.buildSubsystemRequest('sftp'));
@@ -657,6 +701,9 @@ export class SSHSession {
       } else if (channel === this.processChannel) {
         this.processChannel = null;
         this.sendProcessError('SSH server rejected the process-monitor channel');
+      } else {
+        const kill = this.pendingProcessKillChannels.get(channelID);
+        if (kill) this.finalizeProcessKill(kill, 'SSH server rejected the kill channel');
       }
       return;
     }
@@ -713,6 +760,8 @@ export class SSHSession {
         }
       } else if (channel === this.processChannel) {
         this.consumeProcessOutput(output);
+      } else if (this.pendingProcessKillChannels.has(channelID)) {
+        this.appendKillOutput(this.pendingProcessKillChannels.get(channelID)!, output, false);
       }
       await this.adjustLocalWindow(channel);
       return;
@@ -727,6 +776,8 @@ export class SSHSession {
       } else if (channel === this.processChannel) {
         const message = new TextDecoder().decode(output).trim();
         if (message) this.sendProcessError(message.slice(0, 512));
+      } else if (this.pendingProcessKillChannels.has(channelID)) {
+        this.appendKillOutput(this.pendingProcessKillChannels.get(channelID)!, output, true);
       }
       await this.adjustLocalWindow(channel);
       return;
@@ -762,6 +813,9 @@ export class SSHSession {
           this.flushProcessBuffer();
           this.processChannel = null;
           this.sendProcessError('The process monitor stopped');
+        } else {
+          const kill = this.pendingProcessKillChannels.get(channelID);
+          if (kill) this.finalizeProcessKill(kill);
         }
       }
       return;
@@ -806,6 +860,25 @@ export class SSHSession {
     if (this.processWebSocket !== ws) return;
     this.processWebSocket = null;
     void this.closeProcessChannel();
+    // Outstanding kill requests cannot deliver their result back without the monitor socket;
+    // close them so the server releases the SSH channels.
+    for (const kill of [...this.pendingProcessKillChannels.values()]) {
+      kill.cancelled = true;
+      if (kill.timeout) { clearTimeout(kill.timeout); kill.timeout = null; }
+      if (kill.openConfirmed) {
+        if (kill.channel.isOpen() && !kill.channel.hasSentClose()) void this.sendAuxiliaryChannelClose(kill.channel);
+        this.finalizeProcessKill(kill, 'Process monitor disconnected');
+      }
+      // For channels still opening (openConfirmed=false), do NOT delete the entries
+      // from pendingProcessKillChannels / this.channels here. The SSH server may
+      // still send CHANNEL_OPEN_CONFIRMATION; removing the channel now would cause
+      // handleChannel() to throw "unknown recipient" on that reply and break the
+      // SSH session. The CHANNEL_OPEN_CONFIRMATION handler already checks
+      // kill.cancelled and will close the channel, after which CHANNEL_CLOSE drives
+      // finalize (which releases the maps safely). If the server replies with
+      // CHANNEL_OPEN_FAILURE instead, that handler finalizes directly. Either way
+      // the entries are cleaned up without racing the server.
+    }
   }
 
   async handleProcessClientMessage(message: string | ArrayBuffer): Promise<void> {
@@ -818,7 +891,53 @@ export class SSHSession {
     if (value.type === 'ping') { this.sendProcessJson({ type: 'pong' }); return; }
     if (value.type === 'process_start') { await this.openProcessChannel(); return; }
     if (value.type === 'process_stop') { await this.closeProcessChannel(); return; }
+    if (value.type === 'process_kill') {
+      const pid = value.pid;
+      if (typeof pid !== 'number' || !Number.isSafeInteger(pid) || pid <= 0 || pid > 2_147_483_647) {
+        throw new Error('Invalid process-kill request: PID out of range');
+      }
+      const requestId = value.requestId;
+      if (typeof requestId !== 'string' || requestId.length === 0 || requestId.length > 64) {
+        throw new Error('Invalid process-kill request: requestId is missing or too long');
+      }
+      await this.openProcessKillChannel(pid, requestId);
+      return;
+    }
     throw new Error('Unsupported process-monitor message');
+  }
+
+  private async openProcessKillChannel(pid: number, requestId: string): Promise<void> {
+    if (!this.processWebSocket) throw new Error('Process-monitor WebSocket is not attached');
+    if (this.phase !== 'ready') throw new Error('SSH connection is not ready');
+    const channelID = this.nextChannelID++;
+    const channel = new SSHChannel();
+    const pending: PendingProcessKillChannel = {
+      channelID,
+      channel,
+      requestId,
+      pid,
+      timeout: null,
+      cancelled: false,
+      openConfirmed: false,
+      stdoutDecoder: new TextDecoder(),
+      stderrDecoder: new TextDecoder(),
+      stdout: '',
+      stderr: '',
+      stdoutBytes: 0,
+      stderrBytes: 0,
+      finalized: false,
+    };
+    this.channels.set(channelID, channel);
+    this.pendingProcessKillChannels.set(channelID, pending);
+    try {
+      await this.sendEncrypted(channel.buildOpenSession(channelID));
+      pending.timeout = setTimeout(() => this.expirePendingProcessKill(pending), PROCESS_KILL_CHANNEL_OPEN_TIMEOUT_MS);
+    } catch (error) {
+      this.clearPendingProcessKill(channel);
+      this.channels.delete(channelID);
+      this.pendingProcessKillChannels.delete(channelID);
+      throw error;
+    }
   }
 
   private async openProcessChannel(): Promise<void> {
@@ -914,6 +1033,120 @@ export class SSHSession {
     if (pending.timeout) clearTimeout(pending.timeout);
     pending.timeout = null;
     this.pendingProcessChannelOpen = null;
+  }
+
+  private appendKillOutput(kill: PendingProcessKillChannel, output: Uint8Array, isStderr: boolean): void {
+    if (kill.finalized) return;
+    const maxRemaining = PROCESS_KILL_MAX_BUFFER_BYTES - (isStderr ? kill.stderrBytes : kill.stdoutBytes);
+    if (maxRemaining <= 0) return;
+    // Limit input before decoding to prevent large transient string allocations
+    // from oversized SSH DATA / EXTENDED_DATA frames.
+    const input = output.length > maxRemaining ? output.subarray(0, maxRemaining) : output;
+    const text = (isStderr ? kill.stderrDecoder : kill.stdoutDecoder).decode(input, { stream: true });
+    if (!text) return;
+    if (isStderr) {
+      kill.stderr += text;
+      kill.stderrBytes += input.length;
+    } else {
+      kill.stdout += text;
+      kill.stdoutBytes += input.length;
+    }
+  }
+
+  private finalizeProcessKill(kill: PendingProcessKillChannel, errorMessage?: string): void {
+    if (kill.timeout) { clearTimeout(kill.timeout); kill.timeout = null; }
+    const firstFinalize = !kill.finalized;
+    kill.finalized = true;
+    // Always release channel tracking, even on repeat calls. This lets paths that
+    // mark `finalized` manually (e.g. expirePendingProcessKill) defer the actual
+    // cleanup to the eventual CHANNEL_OPEN_CONFIRMATION → CHANNEL_CLOSE → finalize
+    // cycle without leaking the entries.
+    this.pendingProcessKillChannels.delete(kill.channelID);
+    this.channels.delete(kill.channelID);
+    if (!firstFinalize) return;
+    // First-time finalization: flush any buffered decoder tail and deliver the
+    // result to the process monitor. Repeat calls are no-ops for the result but
+    // still release the channel tracking above.
+    const stdoutTail = kill.stdoutDecoder.decode();
+    if (stdoutTail) {
+      const remaining = PROCESS_KILL_MAX_BUFFER_BYTES - kill.stdoutBytes;
+      if (remaining > 0) {
+        const slice = stdoutTail.length > remaining ? stdoutTail.slice(0, remaining) : stdoutTail;
+        kill.stdout += slice;
+        kill.stdoutBytes += slice.length;
+      }
+    }
+    const stderrTail = kill.stderrDecoder.decode();
+    if (stderrTail) {
+      const remaining = PROCESS_KILL_MAX_BUFFER_BYTES - kill.stderrBytes;
+      if (remaining > 0) {
+        const slice = stderrTail.length > remaining ? stderrTail.slice(0, remaining) : stderrTail;
+        kill.stderr += slice;
+        kill.stderrBytes += slice.length;
+      }
+    }
+    const stdout = kill.stdout;
+    const stderr = errorMessage ?? kill.stderr;
+    const ok = errorMessage === undefined && stderr.trim() === '';
+    // The SSH RFC exposes the exit code via a server-sent channel request before close; this
+    // session does not currently decode that request, so we cannot report the real status here.
+    // Surface "null" so the client knows we fell back to the stderr heuristic.
+    const exitStatus: number | null = null;
+    this.sendProcessJson({
+      type: 'process_kill_result',
+      pid: kill.pid,
+      requestId: kill.requestId,
+      ok,
+      exitStatus,
+      stdout,
+      stderr,
+    });
+  }
+
+  private clearPendingProcessKill(channel?: SSHChannel): void {
+    if (!channel) return;
+    const kill = this.pendingProcessKillChannels.get(channel.getLocalChannelID());
+    if (!kill || kill.channel !== channel) return;
+    if (kill.timeout) { clearTimeout(kill.timeout); kill.timeout = null; }
+    kill.cancelled = true;
+  }
+
+  private expirePendingProcessKill(expected: PendingProcessKillChannel): void {
+    const current = this.pendingProcessKillChannels.get(expected.channelID);
+    if (current !== expected) return;
+    expected.timeout = null;
+    expected.cancelled = true;
+    // Do NOT call finalizeProcessKill() here: finalize would delete the channel
+    // from this.channels, and if the SSH server then sends CHANNEL_OPEN_
+    // CONFIRMATION, handleChannel() would throw "unknown recipient" and break
+    // the session. Instead, deliver the timeout result directly (guarded by
+    // `finalized`) and leave the channel tracking in place. The CHANNEL_OPEN_
+    // CONFIRMATION handler will see kill.cancelled and close the channel; the
+    // resulting CHANNEL_CLOSE triggers finalize, which (with the updated
+    // cleanup-on-repeat behavior) releases the maps safely. CHANNEL_OPEN_FAILURE
+    // finalizes directly and cleans up the same way. This preserves the
+    // immediate "timed out" feedback for the client while fixing the race.
+    if (expected.finalized) return;
+    expected.finalized = true;
+    this.sendProcessJson({
+      type: 'process_kill_result',
+      pid: expected.pid,
+      requestId: expected.requestId,
+      ok: false,
+      exitStatus: null,
+      stdout: '',
+      stderr: 'Timed out opening the kill channel',
+    });
+    // Release the pending kill entry (with its decoders + stdout/stderr buffers)
+    // so repeated timeouts cannot accumulate in worker memory. We deliberately
+    // do NOT delete from this.channels here — keeping the SSH channel registered
+    // means a late CHANNEL_OPEN_CONFIRMATION still resolves in handleChannel()
+    // (channel found in this.channels) and falls through to the generic close
+    // branch instead of throwing "unknown recipient". The resulting
+    // CHANNEL_CLOSE handler then finds no pending kill and quietly skips
+    // finalize, so there is no double result-send.
+    this.pendingProcessKillChannels.delete(expected.channelID);
+    if (expected.channel.isOpen()) void this.sendAuxiliaryChannelClose(expected.channel);
   }
 
   private sendProcessJson(value: unknown): void {
