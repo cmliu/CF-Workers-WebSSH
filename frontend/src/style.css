@@ -2228,6 +2228,7 @@ button:disabled {
 
 .process-copyable {
   cursor: pointer;
+  -webkit-user-select: none;
   user-select: none;
   transition: background-color 0.12s ease, color 0.12s ease;
 }
