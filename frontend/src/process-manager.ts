@@ -219,6 +219,19 @@ export class ProcessManager {
         return;
       }
     });
+    // Copyable PID/command cells are keyboard-focusable (tabIndex=0); mirror the click-to-copy
+    // behavior for Enter/Space so the interaction is operable without a mouse.
+    this.elements.panel.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ' && event.key !== 'Spacebar') return;
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      const target = event.target as HTMLElement;
+      const copyCell = target.closest<HTMLTableCellElement>('[data-process-copy-value]');
+      if (!copyCell || !this.elements.tableBody.contains(copyCell)) return;
+      const value = copyCell.dataset.processCopyValue ?? '';
+      if (!value) return;
+      event.preventDefault();
+      void this.copyProcessValue(value, copyCell.dataset.processCopyKind as 'pid' | 'command' | undefined);
+    });
     this.bindKillDialog();
     this.render();
   }
@@ -553,7 +566,8 @@ export class ProcessManager {
       zh = `结束 PID ${result.pid} 失败`;
       en = `Failed to terminate PID ${result.pid}`;
     }
-    this.bilingualToast(zh, en, 'error');
+    const kind: 'info' | 'error' = result.ok ? 'info' : 'error';
+    this.bilingualToast(zh, en, kind);
   }
 
   private bilingualToast(zh: string, en: string, kind: 'info' | 'error' = 'info'): void {

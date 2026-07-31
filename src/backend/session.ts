@@ -71,7 +71,8 @@ interface PendingProcessKillChannel {
   timeout: ReturnType<typeof setTimeout> | null;
   cancelled: boolean;
   openConfirmed: boolean;
-  decoder: TextDecoder;
+  stdoutDecoder: TextDecoder;
+  stderrDecoder: TextDecoder;
   stdout: string;
   stderr: string;
   stdoutBytes: number;
@@ -913,7 +914,8 @@ export class SSHSession {
       timeout: null,
       cancelled: false,
       openConfirmed: false,
-      decoder: new TextDecoder(),
+      stdoutDecoder: new TextDecoder(),
+      stderrDecoder: new TextDecoder(),
       stdout: '',
       stderr: '',
       stdoutBytes: 0,
@@ -928,6 +930,7 @@ export class SSHSession {
     } catch (error) {
       this.clearPendingProcessKill(channel);
       this.channels.delete(channelID);
+      this.pendingProcessKillChannels.delete(channelID);
       throw error;
     }
   }
@@ -1029,7 +1032,7 @@ export class SSHSession {
 
   private appendKillOutput(kill: PendingProcessKillChannel, output: Uint8Array, isStderr: boolean): void {
     if (kill.finalized) return;
-    const text = kill.decoder.decode(output, { stream: true });
+    const text = (isStderr ? kill.stderrDecoder : kill.stdoutDecoder).decode(output, { stream: true });
     if (!text) return;
     if (isStderr) {
       const remaining = PROCESS_KILL_MAX_BUFFER_BYTES - kill.stderrBytes;
@@ -1050,16 +1053,24 @@ export class SSHSession {
     if (kill.finalized) return;
     kill.finalized = true;
     if (kill.timeout) { clearTimeout(kill.timeout); kill.timeout = null; }
-    // Flush any decoder tail so callers see a complete (possibly empty) string.
-    if (!errorMessage) {
-      const tail = kill.decoder.decode();
-      if (tail) {
-        const remaining = PROCESS_KILL_MAX_BUFFER_BYTES - kill.stdoutBytes;
-        if (remaining > 0) {
-          const slice = tail.length > remaining ? tail.slice(0, remaining) : tail;
-          kill.stdout += slice;
-          kill.stdoutBytes += slice.length;
-        }
+    // Flush any decoder tail so callers see a complete (possibly empty) string. Each stream uses
+    // its own decoder, so an interleaved multibyte sequence can never corrupt the other stream.
+    const stdoutTail = kill.stdoutDecoder.decode();
+    if (stdoutTail) {
+      const remaining = PROCESS_KILL_MAX_BUFFER_BYTES - kill.stdoutBytes;
+      if (remaining > 0) {
+        const slice = stdoutTail.length > remaining ? stdoutTail.slice(0, remaining) : stdoutTail;
+        kill.stdout += slice;
+        kill.stdoutBytes += slice.length;
+      }
+    }
+    const stderrTail = kill.stderrDecoder.decode();
+    if (stderrTail) {
+      const remaining = PROCESS_KILL_MAX_BUFFER_BYTES - kill.stderrBytes;
+      if (remaining > 0) {
+        const slice = stderrTail.length > remaining ? stderrTail.slice(0, remaining) : stderrTail;
+        kill.stderr += slice;
+        kill.stderrBytes += slice.length;
       }
     }
     const stdout = kill.stdout;
