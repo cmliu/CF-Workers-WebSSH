@@ -966,12 +966,14 @@ button:disabled {
   flex: 0 0 auto;
   align-items: center;
   gap: 0px;
+  min-width: 144px;          /* integer-pixel floor: 2 children × 72px to suppress sub-pixel jitter from upstream flex propagation */
 }
 
 .session-metrics > div {
-  min-width: 53px;
+  min-width: 72px;             /* widened from 53px to cover "01:00:00" / "999 ms" content without sub-pixel re-layout */
   padding: 0 7px;
   border-left: 1px solid #1c2932;
+  font-variant-numeric: tabular-nums;  /* tabular numerals — defensive even though --mono is monospace */
 }
 
 .session-metrics span,
@@ -984,13 +986,13 @@ button:disabled {
 .resource-metrics {
   display: flex;
   min-width: 0;
-  flex: 0 1 520px;
+  flex: 1 1 auto;
   align-items: center;
-  gap: 9px;
+  gap: 14px;
 }
 
 .resource-metric {
-  min-width: 0;
+  min-width: 60px;             /* integer-pixel floor — absorbs sub-pixel flex-distribution jitter from sibling .session-metrics */
   flex: 1 1 0;
   color: #a8b8c1;
   font-family: var(--mono);
@@ -999,7 +1001,7 @@ button:disabled {
 }
 
 .resource-metric + .resource-metric {
-  padding-left: 9px;
+  padding-left: 12px;
   border-left: 1px solid #1c2932;
 }
 
@@ -1069,6 +1071,70 @@ button:disabled {
   transition: background-color 320ms ease;
 }
 
+.resource-sparkline {
+  display: block;
+  height: 12px;
+  margin-top: 1px;
+  background: #182530;
+  border-radius: 4px;
+  /* Width is now content-driven (canvas drawing buffer = 184px HTML attr),
+     with explicit floor/ceiling so the parent's flex algorithm has a stable
+     size to compute against — breaks the previous width: 100% cycle that
+     caused the sparkline (and surrounding metric box) to jitter on every
+     redraw. */
+  width: auto;
+  min-width: 120px;       /* 最小可见宽度（窄屏也不缩到看不见） */
+  max-width: 100%;        /* 不超过父容器（宽屏防止溢出） */
+  flex: 0 0 auto;         /* 钉死主轴宽度，不增不减 */
+  align-self: stretch;    /* cross-axis 拉满父容器高度方向 */
+}
+
+.resource-network .resource-metric-line > strong.resource-detail + strong.resource-detail {
+  color: #d4e0e5;
+  font-weight: 750;
+}
+
+.resource-network #resource-network-iface {
+  flex: 0 0 auto;
+  color: #8fa2ad;
+  font-weight: 400;
+  letter-spacing: 0.02em;
+}
+
+/* Desktop: keep the up/down rate values on a single inline row. The default
+   `<strong>` is inline, but the new node IDs aren't tied to .resource-detail
+   (which is a flex/text-align: right class), so restate the intent here. */
+.resource-network #resource-network-rate-up,
+.resource-network #resource-network-rate-down {
+  display: inline-block;     /* inline-block so min-width can lock the box */
+  min-width: 10ch;           /* reserve width for "↑ 999.9MB/s" so updates don't reflow */
+  text-align: right;         /* anchor changes to the right edge */
+  font-variant-numeric: tabular-nums;  /* equal-width digits ("1" == "8") */
+  font-weight: 750;
+  white-space: nowrap;       /* never wrap a single rate value */
+  /* color removed — per-arrow colors follow below */
+}
+
+.resource-network #resource-network-rate-up {
+  color: #e0857a;            /* upload (↑) — softer red */
+}
+
+.resource-network #resource-network-rate-down {
+  color: #82c898;            /* download (↓) — softer green */
+}
+
+/* Desktop default: collapse the wrapper to inline so the up/down pair sits
+   on one row alongside iface. On narrow viewports the @media block below
+   promotes this wrapper to a flex column for a two-line layout. */
+.resource-network .resource-network-rates {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  min-width: 21ch;           /* up(10ch) + gap + down(10ch) keeps the box steady */
+  font-variant-numeric: tabular-nums;  /* propagate to children as a safety net */
+  flex: 0 0 auto;            /* pin width — no grow, no shrink */
+}
+
 .session-metrics span {
   margin-bottom: 2px;
   color: #81939e;
@@ -1083,6 +1149,8 @@ button:disabled {
   font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;  /* tabular numerals — pin glyph widths for digit-bound fields like RTT */
+  min-width: 42px;                     /* integer-pixel floor for single-field value text */
 }
 
 .terminal-card {
@@ -2435,10 +2503,6 @@ button:disabled {
     padding: 0 5px;
   }
 
-  .session-metrics > div:first-child {
-    display: none;
-  }
-
 }
 
 @media (max-width: 1500px) {
@@ -2623,6 +2687,54 @@ button:disabled {
   .dock-tab-icon {
     width: 13px;
     height: 13px;
+  }
+
+  /* Narrow viewport: drop the swap metric to make room for a compact
+     two-line network view. The :not([hidden]) guard means the desktop
+     "default hidden" semantics still win when JS hides the node — no
+     `!important` needed, no risk of a stale placeholder leaking out. */
+  .resource-metrics .resource-swap {
+    display: none;
+  }
+
+  .resource-network:not([hidden]) {
+    display: flex;
+  }
+
+  .resource-network #resource-network-iface,
+  .resource-network .resource-sparkline {
+    display: none;
+  }
+
+  /* The wrapper becomes a vertical flex container; the strongs inside
+     (already `display: inline` + color/weight from the desktop rules)
+     stack naturally as two left-aligned rows (flex-start) so labels
+     line up with the rest of the compact toolbar. */
+  .resource-network .resource-network-rates {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0;
+    line-height: 1.05;
+    min-width: 0;              /* allow shrink on narrow screens so the toolbar doesn't overflow */
+    flex: 0 0 auto;
+  }
+}
+
+/* Narrow-screen fallback for the metrics row.
+   On wide screens (>=960px) the metrics container fills the toolbar
+   and each metric shares width equally (see base rules above).
+   On screens <960px we revert to content-driven sizing to avoid
+   squeezing the labels on small windows. */
+@media (max-width: 960px) {
+  .resource-metrics {
+    flex: 0 1 auto;
+  }
+
+  .resource-metric {
+    flex: 0 1 auto;
+    min-width: 60px;
+    max-width: 320px;    /* 兜底：避免极端情况下 metric 撑到 toolbar 边界 */
   }
 }
 

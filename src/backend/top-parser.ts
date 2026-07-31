@@ -3,12 +3,23 @@ export interface ProcessMetrics {
   loadAverage: [number, number, number] | null;
   memory: ResourceUsage | null;
   swap: ResourceUsage | null;
+  network: NetworkSample | null;
 }
 
 export interface ResourceUsage {
   usedBytes: number;
   totalBytes: number;
   percent: number;
+}
+
+// Single network interface sample, taken from a single top-monitor tick. The
+// server only ever emits cumulative byte counters for one interface; the
+// frontend differentiates successive samples with a local clock to compute
+// the upload / download rate.
+export interface NetworkSample {
+  iface: string;
+  rxBytes: number;
+  txBytes: number;
 }
 
 export interface ProcessEntry {
@@ -30,6 +41,10 @@ export interface ProcessSnapshot {
 
 const ANSI_ESCAPE_RE = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))/g;
 const MAX_PROCESSES = 512;
+// Matches the network section the shell command emits between successive
+// `__CF_WEBSSH_NETWORK__` markers. The marker mirrors the top-snapshot marker
+// (octal escapes for `_`) so the same framing primitives work for both blocks.
+const PROCESS_NETWORK_MARKER = '__CF_WEBSSH_NETWORK__';
 
 // Matches a single numeric token that may use ',' or '.' as decimal separator.
 const NUMBER_TOKEN_RE = /\d+(?:[.,]\d+)?/;
@@ -223,6 +238,43 @@ function parseMemoryValue(value: string | undefined): number | null {
   return Math.round(amount * (1024 ** power));
 }
 
+// Parses a non-negative integer expressed in base 10. Returns null for empty
+// strings, negative numbers, floats, hex/octal literals, or anything that does
+// not fit in a safe integer.
+function parseNonNegativeInteger(value: string | undefined | null): number | null {
+  if (!value) return null;
+  if (!/^\d+$/.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+// Extracts the single network interface sample embedded between the network
+// markers. The payload is whitespace-separated (tabs inserted by `printf` on
+// Linux, OFS in awk on macOS), so any run of whitespace is a valid separator.
+// If the marker is missing, the section is empty, or any required field is
+// invalid, returns null — the caller treats this as "no sample" and keeps the
+// network block hidden.
+export function parseNetwork(raw: string): NetworkSample | null {
+  const cleaned = raw.replace(ANSI_ESCAPE_RE, '').replace(/\r/g, '');
+  const start = cleaned.indexOf(PROCESS_NETWORK_MARKER);
+  if (start < 0) return null;
+  const afterStart = start + PROCESS_NETWORK_MARKER.length;
+  const end = cleaned.indexOf(PROCESS_NETWORK_MARKER, afterStart);
+  const section = (end < 0 ? cleaned.slice(afterStart) : cleaned.slice(afterStart, end)).trim();
+  if (!section) return null;
+  // Pick the first non-empty row; additional rows (e.g. partial dumps) are ignored.
+  const line = section.split('\n').map((entry) => entry.trim()).find((entry) => entry.length > 0);
+  if (!line) return null;
+  const parts = line.split(/\s+/);
+  if (parts.length < 3) return null;
+  const iface = parts[0];
+  if (!iface) return null;
+  const rxBytes = parseNonNegativeInteger(parts[1]);
+  const txBytes = parseNonNegativeInteger(parts[2]);
+  if (rxBytes === null || txBytes === null) return null;
+  return { iface, rxBytes, txBytes };
+}
+
 function parseProcesses(lines: string[]): ProcessEntry[] {
   // Header line starts with PID. Both Linux ("%CPU") and FreeBSD ("WCPU") headers match this.
   const headerLineIndex = lines.findIndex((line) => /^\s*PID\s+/i.test(line));
@@ -270,14 +322,16 @@ function parseProcesses(lines: string[]): ProcessEntry[] {
 }
 
 export function parseTopSnapshot(raw: string, timestamp = Date.now()): ProcessSnapshot | null {
-  const lines = raw.replace(ANSI_ESCAPE_RE, '').replace(/\r/g, '').split('\n');
+  const cleaned = raw.replace(ANSI_ESCAPE_RE, '').replace(/\r/g, '');
+  const lines = cleaned.split('\n');
   const processes = parseProcesses(lines);
   const metrics: ProcessMetrics = {
     cpuPercent: parseCPU(lines),
     loadAverage: parseLoad(lines),
     memory: parseUsage(lines, 'Mem'),
     swap: parseUsage(lines, 'Swap'),
+    network: parseNetwork(cleaned),
   };
-  if (processes.length === 0 && Object.values(metrics).every((value) => value === null)) return null;
+  if (processes.length === 0 && metrics.cpuPercent === null && metrics.loadAverage === null && metrics.memory === null && metrics.swap === null) return null;
   return { metrics, processes, timestamp };
 }
