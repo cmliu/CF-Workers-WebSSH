@@ -1,5 +1,19 @@
 import type { SFTPEntry } from './file-manager';
 
+/**
+ * Whether an entry should be shown in the left directory tree.
+ *
+ * The tree only displays folders ('directory') and links ('symlink');
+ * regular files ('file') and other types ('other') are hidden because
+ * listing files in the tree has no practical value. The right-hand file
+ * detail panel still renders every entry.
+ *
+ * Kept as a pure, DOM-free function for testability and clarity.
+ */
+export function isTreeVisibleEntry(entry: { type: string }): boolean {
+  return entry.type === 'directory' || entry.type === 'symlink';
+}
+
 /** Result returned by FileManager.fetchDirectoryEntries. */
 export interface TreeListResult {
   path: string;
@@ -522,7 +536,9 @@ export class FileTree {
       // Per-node race-condition guard: if loadToken changed, this was superseded.
       if (token !== node.loadToken) { resolve(); return; }
 
-      node.children = result.entries.map((entry) => this.createTreeNode(entry, node));
+      node.children = result.entries
+        .filter(isTreeVisibleEntry)
+        .map((entry) => this.createTreeNode(entry, node));
       node.isTruncated = result.isTruncated;
       node.state = 'expanded';
       this.refreshRowContent(node);
