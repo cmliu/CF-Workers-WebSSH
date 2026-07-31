@@ -868,11 +868,16 @@ export class SSHSession {
       if (kill.openConfirmed) {
         if (kill.channel.isOpen() && !kill.channel.hasSentClose()) void this.sendAuxiliaryChannelClose(kill.channel);
         this.finalizeProcessKill(kill, 'Process monitor disconnected');
-      } else {
-        this.pendingProcessKillChannels.delete(kill.channelID);
-        this.channels.delete(kill.channelID);
-        if (kill.timeout) { clearTimeout(kill.timeout); kill.timeout = null; }
       }
+      // For channels still opening (openConfirmed=false), do NOT delete the entries
+      // from pendingProcessKillChannels / this.channels here. The SSH server may
+      // still send CHANNEL_OPEN_CONFIRMATION; removing the channel now would cause
+      // handleChannel() to throw "unknown recipient" on that reply and break the
+      // SSH session. The CHANNEL_OPEN_CONFIRMATION handler already checks
+      // kill.cancelled and will close the channel, after which CHANNEL_CLOSE drives
+      // finalize (which releases the maps safely). If the server replies with
+      // CHANNEL_OPEN_FAILURE instead, that handler finalizes directly. Either way
+      // the entries are cleaned up without racing the server.
     }
   }
 
@@ -1050,11 +1055,19 @@ export class SSHSession {
   }
 
   private finalizeProcessKill(kill: PendingProcessKillChannel, errorMessage?: string): void {
-    if (kill.finalized) return;
-    kill.finalized = true;
     if (kill.timeout) { clearTimeout(kill.timeout); kill.timeout = null; }
-    // Flush any decoder tail so callers see a complete (possibly empty) string. Each stream uses
-    // its own decoder, so an interleaved multibyte sequence can never corrupt the other stream.
+    const firstFinalize = !kill.finalized;
+    kill.finalized = true;
+    // Always release channel tracking, even on repeat calls. This lets paths that
+    // mark `finalized` manually (e.g. expirePendingProcessKill) defer the actual
+    // cleanup to the eventual CHANNEL_OPEN_CONFIRMATION → CHANNEL_CLOSE → finalize
+    // cycle without leaking the entries.
+    this.pendingProcessKillChannels.delete(kill.channelID);
+    this.channels.delete(kill.channelID);
+    if (!firstFinalize) return;
+    // First-time finalization: flush any buffered decoder tail and deliver the
+    // result to the process monitor. Repeat calls are no-ops for the result but
+    // still release the channel tracking above.
     const stdoutTail = kill.stdoutDecoder.decode();
     if (stdoutTail) {
       const remaining = PROCESS_KILL_MAX_BUFFER_BYTES - kill.stdoutBytes;
@@ -1080,8 +1093,6 @@ export class SSHSession {
     // session does not currently decode that request, so we cannot report the real status here.
     // Surface "null" so the client knows we fell back to the stderr heuristic.
     const exitStatus: number | null = null;
-    this.pendingProcessKillChannels.delete(kill.channelID);
-    this.channels.delete(kill.channelID);
     this.sendProcessJson({
       type: 'process_kill_result',
       pid: kill.pid,
@@ -1106,7 +1117,27 @@ export class SSHSession {
     if (current !== expected) return;
     expected.timeout = null;
     expected.cancelled = true;
-    this.finalizeProcessKill(expected, 'Timed out opening the kill channel');
+    // Do NOT call finalizeProcessKill() here: finalize would delete the channel
+    // from this.channels, and if the SSH server then sends CHANNEL_OPEN_
+    // CONFIRMATION, handleChannel() would throw "unknown recipient" and break
+    // the session. Instead, deliver the timeout result directly (guarded by
+    // `finalized`) and leave the channel tracking in place. The CHANNEL_OPEN_
+    // CONFIRMATION handler will see kill.cancelled and close the channel; the
+    // resulting CHANNEL_CLOSE triggers finalize, which (with the updated
+    // cleanup-on-repeat behavior) releases the maps safely. CHANNEL_OPEN_FAILURE
+    // finalizes directly and cleans up the same way. This preserves the
+    // immediate "timed out" feedback for the client while fixing the race.
+    if (expected.finalized) return;
+    expected.finalized = true;
+    this.sendProcessJson({
+      type: 'process_kill_result',
+      pid: expected.pid,
+      requestId: expected.requestId,
+      ok: false,
+      exitStatus: null,
+      stdout: '',
+      stderr: 'Timed out opening the kill channel',
+    });
     if (expected.channel.isOpen()) void this.sendAuxiliaryChannelClose(expected.channel);
   }
 
