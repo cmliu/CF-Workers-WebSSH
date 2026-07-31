@@ -1478,6 +1478,7 @@ button:disabled {
   color: var(--text);
   cursor: pointer;
   white-space: nowrap;
+  -webkit-user-select: none;
   user-select: none;
   outline: 0;
 }
@@ -1584,6 +1585,7 @@ button:disabled {
   color: var(--muted-2);
   font-style: italic;
   white-space: nowrap;
+  -webkit-user-select: none;
   user-select: none;
 }
 
