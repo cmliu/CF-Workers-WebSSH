@@ -1138,6 +1138,15 @@ export class SSHSession {
       stdout: '',
       stderr: 'Timed out opening the kill channel',
     });
+    // Release the pending kill entry (with its decoders + stdout/stderr buffers)
+    // so repeated timeouts cannot accumulate in worker memory. We deliberately
+    // do NOT delete from this.channels here — keeping the SSH channel registered
+    // means a late CHANNEL_OPEN_CONFIRMATION still resolves in handleChannel()
+    // (channel found in this.channels) and falls through to the generic close
+    // branch instead of throwing "unknown recipient". The resulting
+    // CHANNEL_CLOSE handler then finds no pending kill and quietly skips
+    // finalize, so there is no double result-send.
+    this.pendingProcessKillChannels.delete(expected.channelID);
     if (expected.channel.isOpen()) void this.sendAuxiliaryChannelClose(expected.channel);
   }
 

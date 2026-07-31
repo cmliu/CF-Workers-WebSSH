@@ -205,9 +205,10 @@ export class ProcessManager {
       if (killButton) {
         const pid = Number.parseInt(killButton.dataset.processKillPid ?? '', 10);
         if (!Number.isSafeInteger(pid) || pid <= 0) return;
-        const row = killButton.closest<HTMLTableRowElement>('tr');
-        const commandCell = row?.children.item(7);
-        const command = commandCell?.textContent ?? '--';
+        // Reuse the command text already stored on the button's title attribute (set in render()).
+        // Avoids depending on the table's column order via children.item(N), which breaks when
+        // columns are added or rearranged.
+        const command = killButton.title || '--';
         this.openKillDialog(pid, command);
         return;
       }
@@ -630,8 +631,8 @@ export class ProcessManager {
 
     const fragment = document.createDocumentFragment();
     const language = this.getLanguage();
-    const killLabelZh = '强制结束';
-    const killLabelEn = 'Force terminate';
+    const killLabelZh = '结束进程';
+    const killLabelEn = 'Terminate process';
     for (const process of this.sortedProcesses(snapshot.processes)) {
       const row = document.createElement('tr');
       const values = [
