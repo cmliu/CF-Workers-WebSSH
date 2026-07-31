@@ -1102,6 +1102,12 @@ button:disabled {
   grid-template-rows: minmax(0, 1.618fr) minmax(34px, 1fr);
 }
 
+@media (max-width: 760px) {
+  .terminal-card.workspace-panel-open {
+    grid-template-rows: minmax(0, 1fr) minmax(34px, 1fr);
+  }
+}
+
 .terminal-pane {
   display: grid;
   min-width: 0;
