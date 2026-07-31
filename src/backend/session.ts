@@ -1037,20 +1037,19 @@ export class SSHSession {
 
   private appendKillOutput(kill: PendingProcessKillChannel, output: Uint8Array, isStderr: boolean): void {
     if (kill.finalized) return;
-    const text = (isStderr ? kill.stderrDecoder : kill.stdoutDecoder).decode(output, { stream: true });
+    const maxRemaining = PROCESS_KILL_MAX_BUFFER_BYTES - (isStderr ? kill.stderrBytes : kill.stdoutBytes);
+    if (maxRemaining <= 0) return;
+    // Limit input before decoding to prevent large transient string allocations
+    // from oversized SSH DATA / EXTENDED_DATA frames.
+    const input = output.length > maxRemaining ? output.subarray(0, maxRemaining) : output;
+    const text = (isStderr ? kill.stderrDecoder : kill.stdoutDecoder).decode(input, { stream: true });
     if (!text) return;
     if (isStderr) {
-      const remaining = PROCESS_KILL_MAX_BUFFER_BYTES - kill.stderrBytes;
-      if (remaining <= 0) return;
-      const slice = text.length > remaining ? text.slice(0, remaining) : text;
-      kill.stderr += slice;
-      kill.stderrBytes += slice.length;
+      kill.stderr += text;
+      kill.stderrBytes += input.length;
     } else {
-      const remaining = PROCESS_KILL_MAX_BUFFER_BYTES - kill.stdoutBytes;
-      if (remaining <= 0) return;
-      const slice = text.length > remaining ? text.slice(0, remaining) : text;
-      kill.stdout += slice;
-      kill.stdoutBytes += slice.length;
+      kill.stdout += text;
+      kill.stdoutBytes += input.length;
     }
   }
 
