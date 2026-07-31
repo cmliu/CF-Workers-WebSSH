@@ -14,6 +14,13 @@ export interface ProcessManagerElements {
   swapValue: HTMLElement;
   swapAmount: HTMLElement;
   swapProgress: HTMLProgressElement;
+  killDialog: HTMLDialogElement;
+  killDialogPid: HTMLElement;
+  killDialogCommand: HTMLElement;
+  killDialogResult: HTMLElement;
+  killConfirmButton: HTMLButtonElement;
+  killRejectButton: HTMLButtonElement;
+  toastRegion: HTMLElement;
 }
 
 interface ResourceUsage {
@@ -48,11 +55,27 @@ interface ProcessSnapshot {
   timestamp: number;
 }
 
+interface PendingKillContext {
+  pid: number;
+  command: string;
+}
+
+interface ProcessKillResult {
+  type: 'process_kill_result';
+  pid: number;
+  requestId: string;
+  ok: boolean;
+  exitStatus: number | null;
+  stdout: string;
+  stderr: string;
+}
+
 interface ProcessManagerOptions {
   elements: ProcessManagerElements;
   getLanguage: () => 'zh-CN' | 'en';
   onError: (message: string) => void;
   onReconnect?: (zh: string, en: string) => void;
+  onToast?: (zh: string, en: string, kind: 'info' | 'error') => void;
 }
 
 const MAX_PROCESSES = 512;
@@ -60,6 +83,10 @@ const MAX_PROCESSES = 512;
 const RECONNECT_BASE_MS = 1_000;
 const RECONNECT_MAX_MS = 15_000;
 const RECONNECT_MAX_ATTEMPTS = 10;
+// Hard cap on the stdout/stderr text we render from a kill result. Backend already truncates
+// the wire payload, but the frontend keeps its own ceiling so a malformed payload cannot fill
+// the dialog / toast with megabytes of text.
+const KILL_RESULT_TEXT_LIMIT = 2048;
 
 function finitePercent(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 10_000;
@@ -141,6 +168,7 @@ export class ProcessManager {
   private readonly getLanguage: () => 'zh-CN' | 'en';
   private readonly onError: (message: string) => void;
   private readonly onReconnect: ((zh: string, en: string) => void) | undefined;
+  private readonly onToast: ((zh: string, en: string, kind: 'info' | 'error') => void) | undefined;
   private socket: WebSocket | null = null;
   private generation = 0;
   private snapshot: ProcessSnapshot | null = null;
@@ -153,17 +181,59 @@ export class ProcessManager {
   private url: string | null = null;
   private reconnectTimer: number | null = null;
   private reconnectAttempts = 0;
+  // requestId -> pending kill request context. The backend matches by requestId, so the map is
+  // keyed that way; we keep the PID alongside so the dialog can render against the right row.
+  private readonly pendingKills = new Map<string, PendingKillContext>();
+  // pid -> requestId for the kill that is currently awaiting an SSH response. Used to dedupe
+  // accidental repeat clicks on the same row while a previous request is still in flight.
+  private readonly pendingKillsByPid = new Map<number, string>();
 
   constructor(options: ProcessManagerOptions) {
     this.elements = options.elements;
     this.getLanguage = options.getLanguage;
     this.onError = options.onError;
     this.onReconnect = options.onReconnect;
+    this.onToast = options.onToast;
     this.elements.panel.addEventListener('click', (event) => {
-      const button = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-process-sort]');
-      if (!button) return;
-      this.changeSort(button.dataset.processSort as ProcessSortKey);
+      const target = event.target as HTMLElement;
+      const sortButton = target.closest<HTMLButtonElement>('[data-process-sort]');
+      if (sortButton) {
+        this.changeSort(sortButton.dataset.processSort as ProcessSortKey);
+        return;
+      }
+      const killButton = target.closest<HTMLButtonElement>('[data-process-kill-pid]');
+      if (killButton) {
+        const pid = Number.parseInt(killButton.dataset.processKillPid ?? '', 10);
+        if (!Number.isSafeInteger(pid) || pid <= 0) return;
+        // Reuse the command text already stored on the button's title attribute (set in render()).
+        // Avoids depending on the table's column order via children.item(N), which breaks when
+        // columns are added or rearranged.
+        const command = killButton.title || '--';
+        this.openKillDialog(pid, command);
+        return;
+      }
+      const copyCell = target.closest<HTMLTableCellElement>('[data-process-copy-value]');
+      if (copyCell && this.elements.tableBody.contains(copyCell)) {
+        const value = copyCell.dataset.processCopyValue ?? '';
+        if (!value) return;
+        void this.copyProcessValue(value, copyCell.dataset.processCopyKind as 'pid' | 'command' | undefined);
+        return;
+      }
     });
+    // Copyable PID/command cells are keyboard-focusable (tabIndex=0); mirror the click-to-copy
+    // behavior for Enter/Space so the interaction is operable without a mouse.
+    this.elements.panel.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ' && event.key !== 'Spacebar') return;
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      const target = event.target as HTMLElement;
+      const copyCell = target.closest<HTMLTableCellElement>('[data-process-copy-value]');
+      if (!copyCell || !this.elements.tableBody.contains(copyCell)) return;
+      const value = copyCell.dataset.processCopyValue ?? '';
+      if (!value) return;
+      event.preventDefault();
+      void this.copyProcessValue(value, copyCell.dataset.processCopyKind as 'pid' | 'command' | undefined);
+    });
+    this.bindKillDialog();
     this.render();
   }
 
@@ -212,6 +282,18 @@ export class ProcessManager {
     this.clearReconnectTimer();
     this.resetSocket();
     this.snapshot = null;
+    for (const requestId of this.pendingKills.keys()) {
+      this.pendingKillsByPid.delete(this.pendingKills.get(requestId)!.pid);
+    }
+    this.pendingKills.clear();
+    if (this.elements.killDialog.open) this.elements.killDialog.close('reject');
+    this.elements.killDialogResult.hidden = true;
+    this.elements.killDialogResult.removeAttribute('data-state');
+    this.elements.killDialogResult.textContent = '';
+    this.elements.killDialog.removeAttribute('data-state');
+    this.elements.killDialog.removeAttribute('data-request-id');
+    this.elements.killDialog.removeAttribute('data-pid');
+    this.elements.killDialog.removeAttribute('data-command');
     this.render();
   }
 
@@ -290,7 +372,246 @@ export class ProcessManager {
       this.setStatus('正在等待首个 top 快照…', 'Waiting for the first top snapshot…');
     } else if (value.type === 'process_error' && typeof value.message === 'string') {
       this.showError(value.message, value.message);
+    } else if (value.type === 'process_kill_result') {
+      this.handleKillResult(value);
     }
+  }
+
+  private handleKillResult(value: Record<string, unknown>): void {
+    const requestId = typeof value.requestId === 'string' ? value.requestId : '';
+    const context = requestId ? this.pendingKills.get(requestId) : undefined;
+    if (!context) return;
+    this.pendingKills.delete(requestId);
+    this.pendingKillsByPid.delete(context.pid);
+    const result: ProcessKillResult = {
+      type: 'process_kill_result',
+      pid: typeof value.pid === 'number' ? value.pid : context.pid,
+      requestId,
+      ok: value.ok === true,
+      exitStatus: typeof value.exitStatus === 'number' && Number.isFinite(value.exitStatus) ? value.exitStatus : null,
+      stdout: typeof value.stdout === 'string' ? value.stdout : '',
+      stderr: typeof value.stderr === 'string' ? value.stderr : '',
+    };
+    if (this.elements.killDialog.open && this.elements.killDialog.dataset.requestId === requestId) {
+      this.renderKillDialogResult(result);
+    } else {
+      this.toastKillResult(result);
+    }
+  }
+
+  private bindKillDialog(): void {
+    const dialog = this.elements.killDialog;
+    // Native <dialog method="dialog"> form submissions will close the dialog. We intercept the
+    // confirm button so we can flip it into a pending state, fire the WebSocket message, and
+    // keep the dialog open until the server responds.
+    this.elements.killConfirmButton.addEventListener('click', (event) => {
+      const dataset = dialog.dataset;
+      if (dataset.state === 'pending') {
+        // The user clicked again while waiting for the server; ignore the repeat.
+        event.preventDefault();
+        return;
+      }
+      if (dataset.state === 'done') {
+        // After a result, the same button acts as "Close" — let the form submit normally.
+        return;
+      }
+      const pid = Number.parseInt(dataset.pid ?? '', 10);
+      if (!Number.isSafeInteger(pid) || pid <= 0) {
+        event.preventDefault();
+        dialog.close('reject');
+        return;
+      }
+      if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+        event.preventDefault();
+        this.bilingualToast('进程监控尚未就绪，无法发送请求。', 'The process monitor is not ready yet; cannot send the request.', 'error');
+        dialog.close('reject');
+        return;
+      }
+      if (this.pendingKillsByPid.has(pid)) {
+        event.preventDefault();
+        this.bilingualToast(`PID ${pid} 的结束请求仍在处理中。`, `A kill request for PID ${pid} is already in progress.`, 'error');
+        dialog.close('reject');
+        return;
+      }
+      event.preventDefault();
+      const requestId = this.generateRequestId();
+      dataset.state = 'pending';
+      dataset.requestId = requestId;
+      this.pendingKills.set(requestId, { pid, command: dataset.command ?? '' });
+      this.pendingKillsByPid.set(pid, requestId);
+      this.setKillConfirmPending(true);
+      try {
+        this.socket.send(JSON.stringify({ type: 'process_kill', pid, requestId }));
+      } catch (error) {
+        // Synchronous failure (closed socket, etc.) — roll back and surface to the user.
+        const detail = error instanceof Error ? error.message : String(error);
+        this.pendingKills.delete(requestId);
+        this.pendingKillsByPid.delete(pid);
+        dataset.state = '';
+        delete dataset.requestId;
+        this.setKillConfirmPending(false);
+        this.bilingualToast(`无法发送结束请求：${detail}`, `Could not send the kill request: ${detail}`, 'error');
+        dialog.close('reject');
+        this.render();
+      }
+    });
+    dialog.addEventListener('close', () => {
+      const dataset = dialog.dataset;
+      const pendingRequestId = dataset.state === 'pending' ? dataset.requestId ?? '' : '';
+      // If the user dismissed the dialog while a kill was still pending, keep the request
+      // alive on the wire so the result still flows back as a toast. Only the local UI state
+      // resets here.
+      dataset.state = '';
+      delete dataset.requestId;
+      this.elements.killDialogResult.hidden = true;
+      this.elements.killDialogResult.removeAttribute('data-state');
+      this.elements.killDialogResult.textContent = '';
+      this.setKillConfirmPending(false);
+      // If the dialog closed with the cancel button (or Esc) before confirmation, no
+      // requestId was ever registered, so this is a no-op.
+      if (pendingRequestId) {
+        // The result handler will fall back to a toast because the dialog is no longer open.
+      }
+      this.render();
+    });
+  }
+
+  private openKillDialog(pid: number, command: string): void {
+    const existing = this.pendingKillsByPid.get(pid);
+    if (existing) {
+      this.bilingualToast(`PID ${pid} 的结束请求仍在处理中。`, `A kill request for PID ${pid} is already in progress.`, 'error');
+      return;
+    }
+    const dialog = this.elements.killDialog;
+    const dataset = dialog.dataset;
+    dataset.pid = String(pid);
+    dataset.command = command;
+    dataset.state = '';
+    delete dataset.requestId;
+    this.elements.killDialogPid.textContent = String(pid);
+    this.elements.killDialogCommand.textContent = command || '--';
+    this.elements.killDialogResult.hidden = true;
+    this.elements.killDialogResult.removeAttribute('data-state');
+    this.elements.killDialogResult.textContent = '';
+    this.setKillConfirmPending(false);
+    if (typeof dialog.showModal === 'function') {
+      if (dialog.open) dialog.close('reject');
+      dialog.showModal();
+    }
+  }
+
+  private setKillConfirmPending(pending: boolean): void {
+    const button = this.elements.killConfirmButton;
+    const labelPending = this.getLanguage() === 'zh-CN' ? '发送中…' : 'Sending…';
+    const labelDone = this.getLanguage() === 'zh-CN' ? '完成' : 'Done';
+    const labelIdle = this.getLanguage() === 'zh-CN' ? '确定结束' : 'Terminate';
+    if (pending) {
+      button.disabled = true;
+      button.dataset.pendingLabel = labelPending;
+      button.textContent = labelPending;
+      button.dataset.state = 'pending';
+    } else {
+      button.disabled = false;
+      delete button.dataset.pendingLabel;
+      delete button.dataset.state;
+      if (this.elements.killDialog.dataset.requestId && this.elements.killDialog.dataset.state === 'done') {
+        button.textContent = labelDone;
+      } else {
+        button.textContent = labelIdle;
+      }
+    }
+  }
+
+  private renderKillDialogResult(result: ProcessKillResult): void {
+    const dialog = this.elements.killDialog;
+    const target = this.elements.killDialogResult;
+    const language = this.getLanguage();
+    dialog.dataset.state = 'done';
+    const lines: string[] = [];
+    if (result.ok) {
+      target.dataset.state = 'success';
+      lines.push(language === 'zh-CN'
+        ? `已向远端发送 SIGTERM 信号 (PID ${result.pid})。`
+        : `Sent SIGTERM to PID ${result.pid} on the remote host.`);
+    } else {
+      target.dataset.state = 'error';
+      const reason = result.stderr.trim() || result.stdout.trim() || (language === 'zh-CN' ? '远端未返回原因' : 'No reason returned by the remote host');
+      lines.push(language === 'zh-CN' ? `结束失败：${reason}` : `Terminate failed: ${reason}`);
+    }
+    if (result.stdout.trim()) {
+      lines.push('--- stdout ---');
+      lines.push(this.truncateForDisplay(result.stdout));
+    }
+    if (result.stderr.trim()) {
+      lines.push('--- stderr ---');
+      lines.push(this.truncateForDisplay(result.stderr));
+    }
+    target.textContent = lines.join('\n');
+    target.hidden = false;
+    this.setKillConfirmPending(false);
+    // After the result arrives, let the user close the dialog with a click on the confirm
+    // button (which now reads "Done").
+  }
+
+  private toastKillResult(result: ProcessKillResult): void {
+    const reason = result.stderr.trim() || result.stdout.trim();
+    let zh: string;
+    let en: string;
+    if (result.ok) {
+      zh = `已结束 PID ${result.pid}`;
+      en = `Terminated PID ${result.pid}`;
+    } else if (reason) {
+      zh = `结束 PID ${result.pid} 失败：${reason.slice(0, 240)}`;
+      en = `Failed to terminate PID ${result.pid}: ${reason.slice(0, 240)}`;
+    } else {
+      zh = `结束 PID ${result.pid} 失败`;
+      en = `Failed to terminate PID ${result.pid}`;
+    }
+    const kind: 'info' | 'error' = result.ok ? 'info' : 'error';
+    this.bilingualToast(zh, en, kind);
+  }
+
+  private bilingualToast(zh: string, en: string, kind: 'info' | 'error' = 'info'): void {
+    if (this.onToast) {
+      this.onToast(zh, en, kind);
+      return;
+    }
+    // Fallback for environments where the parent didn't inject a toast handler.
+    const region = this.elements.toastRegion;
+    if (!region) return;
+    const item = document.createElement('div');
+    item.className = `toast${kind === 'error' ? ' error' : ''}`;
+    item.textContent = this.getLanguage() === 'zh-CN' ? zh : en;
+    region.append(item);
+    window.setTimeout(() => item.remove(), 4_500);
+  }
+
+  private copyProcessValue(value: string, kind: 'pid' | 'command' | undefined): void {
+    const isPid = kind === 'pid' || /^\d+$/.test(value);
+    void navigator.clipboard.writeText(value).then(
+      () => {
+        const truncated = value.length > 64 ? `${value.slice(0, 64)}…` : value;
+        const display = isPid ? `已复制 PID ${value}` : `已复制命令：${truncated}`;
+        const displayEn = isPid ? `Copied PID ${value}` : `Copied command: ${truncated}`;
+        this.bilingualToast(display, displayEn, 'info');
+      },
+      () => this.bilingualToast('无法访问剪贴板。', 'Could not access the clipboard.', 'error'),
+    );
+  }
+
+  private truncateForDisplay(text: string): string {
+    if (text.length <= KILL_RESULT_TEXT_LIMIT) return text;
+    return `${text.slice(0, KILL_RESULT_TEXT_LIMIT)}\n…`;
+  }
+
+  private generateRequestId(): string {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID();
+    }
+    // Fallback for environments without crypto.randomUUID — still unique enough for a short
+    // session, and bounded to 64 characters to satisfy the backend validator.
+    const random = Math.random().toString(36).slice(2, 10);
+    return `req-${Date.now().toString(36)}-${random}`;
   }
 
   private render(): void {
@@ -309,6 +630,9 @@ export class ProcessManager {
     }
 
     const fragment = document.createDocumentFragment();
+    const language = this.getLanguage();
+    const killLabelZh = '结束进程';
+    const killLabelEn = 'Terminate process';
     for (const process of this.sortedProcesses(snapshot.processes)) {
       const row = document.createElement('tr');
       const values = [
@@ -324,9 +648,38 @@ export class ProcessManager {
       values.forEach((value, index) => {
         const cell = document.createElement('td');
         cell.textContent = value;
-        if (index === values.length - 1) cell.title = value;
+        const isCopyable = index === 0 || index === 7;
+        if (isCopyable) {
+          cell.className = 'process-copyable';
+          cell.tabIndex = 0;
+          cell.dataset.processCopyValue = value;
+          cell.dataset.processCopyKind = index === 0 ? 'pid' : 'command';
+          cell.title = `${value} — 点击复制 / Click to copy`;
+          cell.setAttribute('aria-label', `${value} — 点击复制 / Click to copy`);
+        } else if (index === values.length - 1) {
+          cell.title = value;
+        }
         row.append(cell);
       });
+      const killCell = document.createElement('td');
+      killCell.className = 'process-kill-cell';
+      const killButton = document.createElement('button');
+      killButton.className = 'process-kill-button';
+      killButton.type = 'button';
+      killButton.dataset.processKillPid = String(process.pid);
+      const inFlight = this.pendingKillsByPid.has(process.pid);
+      killButton.disabled = inFlight;
+      killButton.dataset.i18nZh = killLabelZh;
+      killButton.dataset.i18nEn = killLabelEn;
+      killButton.textContent = language === 'zh-CN' ? killLabelZh : killLabelEn;
+      killButton.title = process.command || '--';
+      killButton.dataset.i18nAriaLabelZh = `结束进程 ${process.pid}`;
+      killButton.dataset.i18nAriaLabelEn = `Terminate process ${process.pid}`;
+      killButton.setAttribute('aria-label', language === 'zh-CN'
+        ? `结束进程 ${process.pid}`
+        : `Terminate process ${process.pid}`);
+      killCell.append(killButton);
+      row.append(killCell);
       fragment.append(row);
     }
     this.elements.tableBody.replaceChildren(fragment);
@@ -477,19 +830,26 @@ function getElement<T extends HTMLElement>(id: string): T {
 export function collectProcessManagerElements(): ProcessManagerElements {
   return {
     panel: getElement('process-manager-panel'),
-    tableBody: getElement('process-table-body'),
+    tableBody: getElement<HTMLTableSectionElement>('process-table-body'),
     status: getElement('process-manager-status'),
     empty: getElement('process-manager-empty'),
     error: getElement('process-manager-error'),
     updated: getElement('process-updated'),
     cpuValue: getElement('resource-cpu-value'),
-    cpuProgress: getElement('resource-cpu-progress'),
+    cpuProgress: getElement<HTMLProgressElement>('resource-cpu-progress'),
     cpuLoad: getElement('resource-cpu-load'),
     memoryValue: getElement('resource-memory-value'),
     memoryAmount: getElement('resource-memory-amount'),
-    memoryProgress: getElement('resource-memory-progress'),
+    memoryProgress: getElement<HTMLProgressElement>('resource-memory-progress'),
     swapValue: getElement('resource-swap-value'),
     swapAmount: getElement('resource-swap-amount'),
-    swapProgress: getElement('resource-swap-progress'),
+    swapProgress: getElement<HTMLProgressElement>('resource-swap-progress'),
+    killDialog: getElement<HTMLDialogElement>('process-kill-dialog'),
+    killDialogPid: getElement('process-kill-target-pid'),
+    killDialogCommand: getElement('process-kill-target-command'),
+    killDialogResult: getElement('process-kill-result'),
+    killConfirmButton: getElement<HTMLButtonElement>('confirm-process-kill'),
+    killRejectButton: getElement<HTMLButtonElement>('reject-process-kill'),
+    toastRegion: getElement('toast-region'),
   };
 }

@@ -472,6 +472,7 @@
                         <th scope="col" aria-sort="none"><button class="process-sort" type="button" data-process-sort="state" data-i18n-zh="状态" data-i18n-en="State">状态</button></th>
                         <th scope="col" aria-sort="none"><button class="process-sort" type="button" data-process-sort="time" data-i18n-zh="时间" data-i18n-en="Time">时间</button></th>
                         <th scope="col" aria-sort="none"><button class="process-sort" type="button" data-process-sort="command" data-i18n-zh="名称/命令行" data-i18n-en="Name / command">名称/命令行</button></th>
+                        <th scope="col" class="process-kill-column" data-i18n-zh="操作" data-i18n-en="Actions">操作</th>
                       </tr>
                     </thead>
                     <tbody id="process-table-body"></tbody>
@@ -513,6 +514,26 @@
           <div class="dialog-actions">
             <button id="reject-host-key" class="secondary-button" value="reject" type="submit" data-i18n-zh="取消连接" data-i18n-en="Cancel">取消连接</button>
             <button id="accept-host-key" class="primary-button" value="accept" type="submit">信任并继续</button>
+          </div>
+        </form>
+      </dialog>
+
+      <dialog id="process-kill-dialog" class="process-kill-dialog" aria-labelledby="process-kill-title">
+        <form method="dialog">
+          <span class="dialog-icon" aria-hidden="true">!</span>
+          <div>
+            <p class="eyebrow" data-i18n-zh="危险操作" data-i18n-en="Destructive action">危险操作</p>
+            <h2 id="process-kill-title" data-i18n-zh="确认结束进程？" data-i18n-en="Terminate process?">确认结束进程？</h2>
+            <p id="process-kill-description" data-i18n-zh="将通过 SSH 向远端主机发送 SIGTERM 信号。该操作不可撤销。" data-i18n-en="This will send a SIGTERM signal to the remote process via SSH. This action cannot be undone.">将通过 SSH 向远端主机发送 SIGTERM 信号。该操作不可撤销。</p>
+          </div>
+          <dl>
+            <div><dt data-i18n-zh="PID" data-i18n-en="PID">PID</dt><dd id="process-kill-target-pid">--</dd></div>
+            <div><dt data-i18n-zh="命令" data-i18n-en="Command">命令</dt><dd id="process-kill-target-command" class="process-kill-command">--</dd></div>
+          </dl>
+          <div id="process-kill-result" class="process-kill-result" role="status" aria-live="polite" hidden></div>
+          <div class="dialog-actions">
+            <button id="reject-process-kill" class="secondary-button" value="reject" type="submit" data-i18n-zh="取消" data-i18n-en="Cancel">取消</button>
+            <button id="confirm-process-kill" class="primary-button is-danger" value="confirm" type="submit" data-i18n-zh="确定结束" data-i18n-en="Terminate">确定结束</button>
           </div>
         </form>
       </dialog>
