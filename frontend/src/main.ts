@@ -416,7 +416,7 @@ let processManager: ProcessManager;
 // per tick; we keep a per-interface baseline (counters + local clock timestamp)
 // so switching the selected interface — or the server reporting a different
 // set — never produces a bogus one-shot rate spike. `netIfaceList` is the
-// deduplicated, order-preserving list of interfaces seen this session;
+// deduplicated, order-preserving list of interfaces present in the latest tick;
 // `netSelectedIface` stays null until the first tick resolves a default.
 // 60-point ring buffer of the per-tick throughput magnitude (max of rx/tx).
 // The newest sample lives at `netSparkIdx - 1`; the oldest at `netSparkIdx`
