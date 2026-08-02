@@ -3,7 +3,7 @@ export interface ProcessMetrics {
   loadAverage: [number, number, number] | null;
   memory: ResourceUsage | null;
   swap: ResourceUsage | null;
-  network: NetworkSample | null;
+  network: NetworkSample[] | null;
 }
 
 export interface ResourceUsage {
@@ -12,10 +12,11 @@ export interface ResourceUsage {
   percent: number;
 }
 
-// Single network interface sample, taken from a single top-monitor tick. The
-// server only ever emits cumulative byte counters for one interface; the
-// frontend differentiates successive samples with a local clock to compute
-// the upload / download rate.
+// Network interface samples from a single top-monitor tick. The server emits
+// one row per non-virtual interface (cumulative rx/tx byte counters, capped at
+// MAX_NETWORK_INTERFACES rows); the frontend differentiates successive samples
+// of the selected interface with a local clock to compute the upload /
+// download rate.
 export interface NetworkSample {
   iface: string;
   rxBytes: number;
@@ -41,6 +42,10 @@ export interface ProcessSnapshot {
 
 const ANSI_ESCAPE_RE = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))/g;
 const MAX_PROCESSES = 512;
+// Upper bound on the number of network interface rows the shell may emit per
+// tick (and the frontend guard accepts). Mirrors the shell's own 32-line cap
+// so a hostile or misbehaving host cannot flood the snapshot with rows.
+const MAX_NETWORK_INTERFACES = 32;
 // Matches the network section the shell command emits after a single
 // `__CF_WEBSSH_NETWORK__` marker per tick. The marker mirrors the top-snapshot
 // marker (octal escapes for `_`) so the same framing primitives apply.
@@ -248,32 +253,38 @@ function parseNonNegativeInteger(value: string | undefined | null): number | nul
   return Number.isSafeInteger(parsed) ? parsed : null;
 }
 
-// Extracts the single network interface sample from the network section, which
+// Extracts the network interface samples from the network section, which
 // starts at the `__CF_WEBSSH_NETWORK__` marker and runs to the end of the
 // snapshot (or to a second marker if one exists). The payload is whitespace-
 // separated (tabs inserted by `printf` on Linux, OFS in awk on macOS), so any
-// run of whitespace is a valid separator. If the marker is missing, the section
-// is empty, or any required field is invalid, returns null — the caller treats
-// this as "no sample" and keeps the network block hidden.
-export function parseNetwork(raw: string): NetworkSample | null {
+// run of whitespace is a valid separator. Every non-empty line is parsed in
+// order; malformed rows are skipped without aborting the section, and the
+// result is capped at MAX_NETWORK_INTERFACES. Returns [] when the marker is
+// missing, the section is empty, or every row is malformed — the caller maps
+// an empty list to null so the "no sample" semantics stay unchanged.
+export function parseNetwork(raw: string): NetworkSample[] {
   const cleaned = raw.replace(ANSI_ESCAPE_RE, '').replace(/\r/g, '');
   const start = cleaned.indexOf(PROCESS_NETWORK_MARKER);
-  if (start < 0) return null;
+  if (start < 0) return [];
   const afterStart = start + PROCESS_NETWORK_MARKER.length;
   const end = cleaned.indexOf(PROCESS_NETWORK_MARKER, afterStart);
   const section = (end < 0 ? cleaned.slice(afterStart) : cleaned.slice(afterStart, end)).trim();
-  if (!section) return null;
-  // Pick the first non-empty row; additional rows (e.g. partial dumps) are ignored.
-  const line = section.split('\n').map((entry) => entry.trim()).find((entry) => entry.length > 0);
-  if (!line) return null;
-  const parts = line.split(/\s+/);
-  if (parts.length < 3) return null;
-  const iface = parts[0];
-  if (!iface) return null;
-  const rxBytes = parseNonNegativeInteger(parts[1]);
-  const txBytes = parseNonNegativeInteger(parts[2]);
-  if (rxBytes === null || txBytes === null) return null;
-  return { iface, rxBytes, txBytes };
+  if (!section) return [];
+  const samples: NetworkSample[] = [];
+  for (const line of section.split('\n')) {
+    const entry = line.trim();
+    if (!entry) continue;
+    const parts = entry.split(/\s+/);
+    if (parts.length < 3) continue;
+    const iface = parts[0];
+    if (!iface) continue;
+    const rxBytes = parseNonNegativeInteger(parts[1]);
+    const txBytes = parseNonNegativeInteger(parts[2]);
+    if (rxBytes === null || txBytes === null) continue;
+    samples.push({ iface, rxBytes, txBytes });
+    if (samples.length >= MAX_NETWORK_INTERFACES) break;
+  }
+  return samples;
 }
 
 function parseProcesses(lines: string[]): ProcessEntry[] {
@@ -326,12 +337,16 @@ export function parseTopSnapshot(raw: string, timestamp = Date.now()): ProcessSn
   const cleaned = raw.replace(ANSI_ESCAPE_RE, '').replace(/\r/g, '');
   const lines = cleaned.split('\n');
   const processes = parseProcesses(lines);
+  // An empty network section is indistinguishable from a missing one: map it to
+  // null so the "no sample" semantics (frontend keeps the block, snapshot-empty
+  // detection) stay unchanged for the single-tick case.
+  const parsedNetwork = parseNetwork(cleaned);
   const metrics: ProcessMetrics = {
     cpuPercent: parseCPU(lines),
     loadAverage: parseLoad(lines),
     memory: parseUsage(lines, 'Mem'),
     swap: parseUsage(lines, 'Swap'),
-    network: parseNetwork(cleaned),
+    network: parsedNetwork.length > 0 ? parsedNetwork : null,
   };
   if (processes.length === 0 && metrics.cpuPercent === null && metrics.loadAverage === null && metrics.memory === null && metrics.swap === null && metrics.network === null) return null;
   return { metrics, processes, timestamp };

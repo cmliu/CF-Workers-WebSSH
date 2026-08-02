@@ -285,6 +285,7 @@ const ui = {
   metricHostKey: element<HTMLElement>('metric-host-key'),
   resourceNetwork: element<HTMLElement>('resource-network'),
   resourceNetworkIface: element<HTMLElement>('resource-network-iface'),
+  resourceNetworkSelect: element<HTMLSelectElement>('resource-network-select'),
   resourceNetworkRateUp: element<HTMLElement>('resource-network-rate-up'),
   resourceNetworkRateDown: element<HTMLElement>('resource-network-rate-down'),
   resourceNetworkSparkline: element<HTMLCanvasElement>('resource-network-sparkline'),
@@ -411,14 +412,12 @@ let fileManager: FileManager;
 let fileTree: FileTree;
 let processManager: ProcessManager;
 
-// Network rate state. The backend only sends cumulative byte counters per
-// sample; we differentiate them with a local clock (server timestamp) to
-// derive the upload / download rate that drives the toolbar sparkline.
-// `lastRx/lastTx/lastTs` are null until the first valid sample is received;
-// on reset we clear them so the next sample is treated as a fresh baseline.
-let netLastRx: number | null = null;
-let netLastTx: number | null = null;
-let netLastTs: number | null = null;
+// Network rate state. The backend sends cumulative byte counters per interface
+// per tick; we keep a per-interface baseline (counters + local clock timestamp)
+// so switching the selected interface — or the server reporting a different
+// set — never produces a bogus one-shot rate spike. `netIfaceList` is the
+// deduplicated, order-preserving list of interfaces present in the latest tick;
+// `netSelectedIface` stays null until the first tick resolves a default.
 // 60-point ring buffer of the per-tick throughput magnitude (max of rx/tx).
 // The newest sample lives at `netSparkIdx - 1`; the oldest at `netSparkIdx`
 // once the buffer wraps, or at index 0 while it is still filling.
@@ -426,7 +425,9 @@ const NET_SPARK_POINTS = 60;
 const netSpark = new Float32Array(NET_SPARK_POINTS);
 let netSparkIdx = 0;
 let netSparkFilled = 0;
-let netBaselineEstablished = false;
+const netBaselines = new Map<string, { rx: number; tx: number; ts: number }>();
+let netIfaceList: string[] = [];
+let netSelectedIface: string | null = null;
 
 const NET_RATE_UNITS = ['B', 'KB', 'MB', 'GB'] as const;
 
@@ -486,8 +487,55 @@ function drawNetworkSparkline(): void {
   }
 }
 
-function updateNetworkMetric(sample: NetworkSample | null, timestamp: number): void {
-  if (!sample) {
+// Rebuilds the `<select>` options only when the interface list changed, so a
+// rapid tick cannot recreate the element under an open dropdown (which would
+// drop focus). The iface label always follows the currently selected interface.
+function syncNetworkSelectOptions(): void {
+  const select = ui.resourceNetworkSelect;
+  const existing = Array.from(select.options).map((option) => option.value);
+  const unchanged = existing.length === netIfaceList.length
+    && existing.every((value, index) => value === netIfaceList[index]);
+  if (unchanged) return;
+  select.replaceChildren();
+  for (const iface of netIfaceList) {
+    const option = document.createElement('option');
+    option.value = iface;
+    option.textContent = iface;
+    select.append(option);
+  }
+}
+
+// Reflects the current interface list / selection in the toolbar: a single
+// interface keeps the plain-text label, two or more reveal the native select
+// (which itself displays the chosen interface name, so the redundant
+// plain-text label is hidden while the select is shown).
+function updateNetworkIfaceLabel(): void {
+  const select = ui.resourceNetworkSelect;
+  const multi = netIfaceList.length > 1;
+  ui.resourceNetworkIface.textContent = netSelectedIface ?? '-';
+  ui.resourceNetworkIface.hidden = multi;
+  select.hidden = !multi;
+  if (multi) {
+    syncNetworkSelectOptions();
+    select.value = netSelectedIface ?? '';
+  }
+}
+
+// Sole entry point for resetting the rate baseline. Called on interface
+// switch (manual or automatic fallback) and on full teardown; do NOT clear
+// baseline state by hand anywhere else.
+function resetNetworkBaseline(): void {
+  netBaselines.clear();
+  netSpark.fill(0);
+  netSparkIdx = 0;
+  netSparkFilled = 0;
+  drawNetworkSparkline();
+  ui.resourceNetworkRateUp.textContent = `↑ ${formatNetworkRate(0)}`;
+  ui.resourceNetworkRateDown.textContent = `↓ ${formatNetworkRate(0)}`;
+}
+
+function updateNetworkMetric(samples: NetworkSample[] | null, timestamp: number): void {
+  if (!samples || samples.length === 0) {
     // The server may briefly stop sending a network section (e.g. busybox
     // sh without /sys/class/net). Don't tear down the toolbar block on a
     // single missing tick — only reset on a full teardown. The next valid
@@ -495,35 +543,66 @@ function updateNetworkMetric(sample: NetworkSample | null, timestamp: number): v
     return;
   }
   if (ui.resourceNetwork.hidden) ui.resourceNetwork.hidden = false;
-  ui.resourceNetworkIface.textContent = sample.iface;
-  if (netLastTs === null) {
-    // First valid sample: stash the counters and timestamp; rate and sparkline
-    // both show zero until we have a second sample to diff against.
-    netLastRx = sample.rxBytes;
-    netLastTx = sample.txBytes;
-    netLastTs = timestamp;
-    if (!netBaselineEstablished) {
-      netSpark.fill(0);
-      netSparkIdx = 0;
-      netSparkFilled = 0;
-      netBaselineEstablished = true;
-    }
+
+  // Deduplicated, order-preserving interface list for this tick. A tick may
+  // carry the same interface twice (server fallback); only the first
+  // occurrence is kept so the selector stays stable.
+  const list: string[] = [];
+  const seen = new Set<string>();
+  for (const sample of samples) {
+    if (seen.has(sample.iface)) continue;
+    seen.add(sample.iface);
+    list.push(sample.iface);
+  }
+  netIfaceList = list;
+
+  // Resolve the selected interface: keep the user's choice while it is still
+  // present, otherwise fall back to eth0 (or the first interface in order).
+  const previousSelection = netSelectedIface;
+  if (netSelectedIface === null || !netIfaceList.includes(netSelectedIface)) {
+    netSelectedIface = netIfaceList.includes('eth0') ? 'eth0' : netIfaceList[0];
+  }
+  if (netSelectedIface !== previousSelection) {
+    // Interface changed (user switch or automatic fallback): a fresh baseline
+    // prevents a bogus one-shot rate spike across different counters.
+    resetNetworkBaseline();
+  }
+
+  // Prune baselines for interfaces that disappeared (e.g. cable unplugged).
+  for (const iface of netBaselines.keys()) {
+    if (!netIfaceList.includes(iface)) netBaselines.delete(iface);
+  }
+
+  const selected = netSelectedIface;
+  const sample = samples.find((entry) => entry.iface === selected);
+  if (!sample) {
+    // The selected interface is absent from this tick (mid-switch); keep the
+    // current UI until the next tick provides it again.
+    return;
+  }
+
+  const baseline = netBaselines.get(selected);
+  if (!baseline) {
+    // First sample for the selected interface: stash the counters and
+    // timestamp; rate and sparkline both show zero until we have a second
+    // sample to diff against.
+    netBaselines.set(selected, { rx: sample.rxBytes, tx: sample.txBytes, ts: timestamp });
     drawNetworkSparkline();
     ui.resourceNetworkRateUp.textContent = `↑ ${formatNetworkRate(0)}`;
     ui.resourceNetworkRateDown.textContent = `↓ ${formatNetworkRate(0)}`;
+    updateNetworkIfaceLabel();
     return;
   }
+
   // `timestamp` is in milliseconds; clamp to a tiny positive value so a
   // pathological zero/negative delta (rare clock skew) cannot divide-by-zero
   // or produce an infinite rate.
-  const deltaSeconds = Math.max(0.001, (timestamp - (netLastTs ?? timestamp)) / 1000);
-  const deltaRx = Math.max(0, sample.rxBytes - (netLastRx ?? sample.rxBytes));
-  const deltaTx = Math.max(0, sample.txBytes - (netLastTx ?? sample.txBytes));
+  const deltaSeconds = Math.max(0.001, (timestamp - baseline.ts) / 1000);
+  const deltaRx = Math.max(0, sample.rxBytes - baseline.rx);
+  const deltaTx = Math.max(0, sample.txBytes - baseline.tx);
   const rxRate = deltaRx / deltaSeconds;
   const txRate = deltaTx / deltaSeconds;
-  netLastRx = sample.rxBytes;
-  netLastTx = sample.txBytes;
-  netLastTs = timestamp;
+  netBaselines.set(selected, { rx: sample.rxBytes, tx: sample.txBytes, ts: timestamp });
   // Use the larger of the two rates as the sparkline magnitude so a
   // quiescent direction doesn't make the chart look half-dead.
   const magnitude = Math.max(rxRate, txRate);
@@ -534,26 +613,26 @@ function updateNetworkMetric(sample: NetworkSample | null, timestamp: number): v
   // `↑` = upload (tx), `↓` = download (rx) — match the toolbar arrow convention.
   ui.resourceNetworkRateUp.textContent = `↑ ${formatNetworkRate(txRate)}`;
   ui.resourceNetworkRateDown.textContent = `↓ ${formatNetworkRate(rxRate)}`;
+  updateNetworkIfaceLabel();
 }
 
 function resetNetworkMetric(): void {
-  // Idempotent: only touch the DOM / state if the block is currently visible,
-  // so repeated resets (one per processManager.reset() call site) are cheap.
-  if (ui.resourceNetwork.hidden && netBaselineEstablished === false && netLastTs === null) return;
+  // Idempotent: only touch the DOM / state if the block is currently visible
+  // or still carries live state, so repeated resets (one per
+  // processManager.reset() call site) are cheap.
+  if (ui.resourceNetwork.hidden && netSelectedIface === null && netBaselines.size === 0) return;
   ui.resourceNetwork.hidden = true;
+  netIfaceList = [];
+  netSelectedIface = null;
+  const select = ui.resourceNetworkSelect;
+  select.replaceChildren();
+  select.hidden = true;
+  // Restore the default single-card presentation: the plain-text label is
+  // visible again and the select is hidden, so a fresh session starts from a
+  // clean state regardless of the previous multi-card visibility toggle.
+  ui.resourceNetworkIface.hidden = false;
   ui.resourceNetworkIface.textContent = '-';
-  ui.resourceNetworkRateUp.textContent = `↑ ${formatNetworkRate(0)}`;
-  ui.resourceNetworkRateDown.textContent = `↓ ${formatNetworkRate(0)}`;
-  const canvas = ui.resourceNetworkSparkline;
-  const ctx = canvas.getContext('2d');
-  if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
-  netLastRx = null;
-  netLastTx = null;
-  netLastTs = null;
-  netSpark.fill(0);
-  netSparkIdx = 0;
-  netSparkFilled = 0;
-  netBaselineEstablished = false;
+  resetNetworkBaseline();
 }
 
 const terminal = new Terminal({
@@ -1652,8 +1731,8 @@ async function connect(): Promise<void> {
   if (historyPasswordLoading) return;
   historyPasswordLoadGeneration++;
   historyPasswordLoading = false;
-  // Fresh baseline for a new session: the previous run may have left counters
-  // in `netLastRx` etc. if the user navigated away without closing cleanly.
+  // Fresh baseline for a new session: the previous run may have left network
+  // state (interface list, baselines) if the user navigated away uncleanly.
   resetNetworkMetric();
   applyFormDefaults();
   const validationError = validateConnectForm();
@@ -2090,6 +2169,16 @@ ui.hostKeyDialog.addEventListener('cancel', (cancelEvent) => {
 });
 ui.hostKeyDialog.addEventListener('close', () => {
   sendHostKeyDecision(ui.hostKeyDialog.returnValue === 'accept');
+});
+// Bind the network interface selector once. Options are rebuilt by
+// syncNetworkSelectOptions() only when the interface list changes, so the
+// element keeps focus while the user interacts with it.
+ui.resourceNetworkSelect.addEventListener('change', () => {
+  const next = ui.resourceNetworkSelect.value;
+  if (!next || next === netSelectedIface) return;
+  netSelectedIface = next;
+  resetNetworkBaseline();
+  updateNetworkIfaceLabel();
 });
 terminal.onData(sendTerminalData);
 new ResizeObserver(() => fitTerminal(true)).observe(ui.terminalStage);
