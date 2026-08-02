@@ -1149,7 +1149,7 @@ button:disabled {
   font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-variant-numeric: tabular-nums;  /* tabular numerals — pin glyph widths for digit-bound fields like RTT */
+  font-variant-numeric: tabular-nums;  /* tabular numerals — pin glyph widths for digit-bound fields like uptime / host key */
   min-width: 42px;                     /* integer-pixel floor for single-field value text */
 }
 
@@ -2717,7 +2717,7 @@ button:disabled {
     gap: 0;
     line-height: 1.05;
     min-width: 0;              /* allow shrink on narrow screens so the toolbar doesn't overflow */
-    flex: 0 0 auto;
+    flex: 0 1 auto;            /* shrink allowed — matches min-width: 0 above (desktop keeps flex: 0 0 auto) */
   }
 }
 

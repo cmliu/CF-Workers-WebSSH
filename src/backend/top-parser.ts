@@ -332,6 +332,6 @@ export function parseTopSnapshot(raw: string, timestamp = Date.now()): ProcessSn
     swap: parseUsage(lines, 'Swap'),
     network: parseNetwork(cleaned),
   };
-  if (processes.length === 0 && metrics.cpuPercent === null && metrics.loadAverage === null && metrics.memory === null && metrics.swap === null) return null;
+  if (processes.length === 0 && metrics.cpuPercent === null && metrics.loadAverage === null && metrics.memory === null && metrics.swap === null && metrics.network === null) return null;
   return { metrics, processes, timestamp };
 }

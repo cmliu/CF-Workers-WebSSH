@@ -92,12 +92,6 @@ const PROCESS_KILL_CHANNEL_OPEN_TIMEOUT_MS = 15_000;
 // channel; cap the bytes we keep per stream so one bad request cannot exhaust worker memory.
 const PROCESS_KILL_MAX_BUFFER_BYTES = 4 * 1024;
 const PROCESS_SNAPSHOT_MARKER = '__CF_WEBSSH_TOP_SNAPSHOT__';
-// Marks a single-line network block appended to the same stream as the top
-// snapshot. The shell command emits `<iface>\t<rx>\t<tx>` once between two
-// markers; if any step (missing /sys/class/net, unparsable netstat output,
-// non-numeric counters) fails the marker is still printed but the body is
-// empty so the frontend falls back to "hidden".
-const PROCESS_NETWORK_MARKER = '__CF_WEBSSH_NETWORK__';
 // Octal escapes keep the delimiter itself out of the command line shown by top.
 // `top` flags differ across platforms: Linux procps uses `-n 1` (1 iteration) + `-c` (full command line),
 // but on FreeBSD `-n 1` means "show 1 process" and `-w` is unsupported — so the previous
