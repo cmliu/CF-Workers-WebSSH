@@ -50,16 +50,17 @@ interface ProcessSnapshot {
     loadAverage: [number, number, number] | null;
     memory: ResourceUsage | null;
     swap: ResourceUsage | null;
-    network: NetworkSample | null;
+    network: NetworkSample[] | null;
   };
   processes: ProcessEntry[];
   timestamp: number;
 }
 
-// Single cumulative-byte network sample for the chosen interface. The
-// server only forwards the raw counters; the frontend differentiates two
-// successive samples with a local clock to compute the upload / download
-// rate that drives the sparkline.
+// Per-interface cumulative-byte network samples for the current tick. The
+// server forwards the raw counters for every non-virtual interface (capped at
+// MAX_NETWORK_INTERFACES); the frontend differentiates two successive samples
+// of the selected interface with a local clock to compute the upload /
+// download rate that drives the sparkline.
 export interface NetworkSample {
   iface: string;
   rxBytes: number;
@@ -89,12 +90,17 @@ interface ProcessManagerOptions {
   onToast?: (zh: string, en: string, kind: 'info' | 'error') => void;
   // Fired once per validated snapshot, even when the server didn't return a
   // network sample. The frontend uses the local clock + successive samples to
-  // derive the upload / download rate; the first sample is the baseline
-  // (rate shows zero) and the next one starts drawing the sparkline.
-  onNetworkSample?: (sample: NetworkSample | null, timestamp: number) => void;
+  // derive the per-interface upload / download rate; the first sample of the
+  // selected interface is the baseline (rate shows zero) and the next one
+  // starts drawing the sparkline.
+  onNetworkSample?: (samples: NetworkSample[] | null, timestamp: number) => void;
 }
 
 const MAX_PROCESSES = 512;
+// Upper bound on the number of network interface samples the backend may emit
+// per tick. Mirrors the shell/parser cap (src/backend) so a hostile or
+// misbehaving host cannot flood the frontend with rows.
+const MAX_NETWORK_INTERFACES = 32;
 // Auto-reconnect backoff for the process monitor after an unexpected drop.
 const RECONNECT_BASE_MS = 1_000;
 const RECONNECT_MAX_MS = 15_000;
@@ -124,6 +130,15 @@ function isNetworkSample(value: unknown): value is NetworkSample {
     && typeof sample.txBytes === 'number' && Number.isSafeInteger(sample.txBytes) && sample.txBytes >= 0;
 }
 
+// Guards a validated list of network samples: an array of at most
+// MAX_NETWORK_INTERFACES entries, each passing the single-sample guard.
+// The length cap mirrors the backend's shell/parser cap.
+export function isNetworkSampleList(value: unknown): value is NetworkSample[] {
+  return Array.isArray(value)
+    && value.length <= MAX_NETWORK_INTERFACES
+    && value.every(isNetworkSample);
+}
+
 function isProcess(value: unknown): value is ProcessEntry {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const process = value as Partial<ProcessEntry>;
@@ -149,7 +164,7 @@ function isSnapshot(value: unknown): value is ProcessSnapshot {
     && (metrics!.loadAverage === null || (Array.isArray(metrics!.loadAverage) && metrics!.loadAverage.length === 3 && metrics!.loadAverage.every(finitePercent)))
     && (metrics!.memory === null || isUsage(metrics!.memory))
     && (metrics!.swap === null || isUsage(metrics!.swap))
-    && (metrics!.network === null || isNetworkSample(metrics!.network));
+    && (metrics!.network === null || isNetworkSampleList(metrics!.network));
 }
 
 function formatPercent(value: number | null): string {
@@ -194,7 +209,7 @@ export class ProcessManager {
   private readonly onError: (message: string) => void;
   private readonly onReconnect: ((zh: string, en: string) => void) | undefined;
   private readonly onToast: ((zh: string, en: string, kind: 'info' | 'error') => void) | undefined;
-  private readonly onNetworkSample: ((sample: NetworkSample | null, timestamp: number) => void) | undefined;
+  private readonly onNetworkSample: ((samples: NetworkSample[] | null, timestamp: number) => void) | undefined;
   private socket: WebSocket | null = null;
   private generation = 0;
   private snapshot: ProcessSnapshot | null = null;

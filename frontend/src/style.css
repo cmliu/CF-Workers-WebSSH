@@ -1096,6 +1096,30 @@ button:disabled {
   letter-spacing: 0.02em;
 }
 
+/* Multi-interface selector: a compact native <select> that sits next to the
+   iface label. Hidden by default (single-interface ticks keep the plain text
+   label); JS reveals it once a tick reports two or more interfaces. */
+.resource-network .resource-network-select {
+  flex: 0 1 auto;
+  min-width: 52px;
+  max-width: 110px;
+  padding: 0 4px;
+  color: #d4e0e5;
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1.4;
+  background: #182530;
+  border: 1px solid #263642;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.resource-network .resource-network-select:hover,
+.resource-network .resource-network-select:focus-visible {
+  border-color: var(--accent);
+  outline: none;
+}
+
 /* Desktop: keep the up/down rate values on a single inline row. The default
    `<strong>` is inline, but the new node IDs aren't tied to .resource-detail
    (which is a flex/text-align: right class), so restate the intent here. */
@@ -2696,9 +2720,38 @@ button:disabled {
     display: flex;
   }
 
+  /* Positioning context for the invisible interface-picker overlay. */
+  .resource-network .resource-metric-line {
+    position: relative;
+  }
+
   .resource-network #resource-network-iface,
   .resource-network .resource-sparkline {
     display: none;
+  }
+
+  /* Narrow viewport: instead of hiding the native select, turn it into an
+     invisible overlay covering the rates area. opacity:0 (NOT display:none /
+     visibility:hidden) keeps the control hit-testable and focusable, so
+     tapping the ↑/↓ rates opens the native picker; keyboard users can still
+     Tab to it and change the selection with arrow keys. */
+  .resource-network .resource-network-select {
+    position: absolute;
+    inset: 0;
+    z-index: 2;                /* above the rates content so taps hit the select */
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    max-width: none;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: transparent;
+    opacity: 0;
+    cursor: pointer;
+    -webkit-appearance: none;
+    appearance: none;
   }
 
   /* The wrapper becomes a vertical flex container; the strongs inside
