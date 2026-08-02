@@ -8,7 +8,7 @@ import { resolveConnectionControl, resolveConnectionPanel } from './ui-state';
 import { classifyHostKey, SSH_FINGERPRINT_RE, type HostKeyPrompt } from './host-key';
 import { FileManager, collectFileManagerElements } from './file-manager';
 import { FileTree } from './file-tree';
-import { ProcessManager, collectProcessManagerElements } from './process-manager';
+import { ProcessManager, collectProcessManagerElements, type NetworkSample } from './process-manager';
 import { resetTerminalForConnection } from './terminal-session';
 import './style.css';
 
@@ -281,9 +281,13 @@ const ui = {
   sessionSubtitle: element<HTMLElement>('session-subtitle'),
   liveOrb: element<HTMLElement>('live-orb'),
   liveOrbLabel: element<HTMLElement>('live-orb-label'),
-  metricRtt: element<HTMLElement>('metric-rtt'),
   metricUptime: element<HTMLElement>('metric-uptime'),
   metricHostKey: element<HTMLElement>('metric-host-key'),
+  resourceNetwork: element<HTMLElement>('resource-network'),
+  resourceNetworkIface: element<HTMLElement>('resource-network-iface'),
+  resourceNetworkRateUp: element<HTMLElement>('resource-network-rate-up'),
+  resourceNetworkRateDown: element<HTMLElement>('resource-network-rate-down'),
+  resourceNetworkSparkline: element<HTMLCanvasElement>('resource-network-sparkline'),
   terminalCard: element<HTMLElement>('terminal-card'),
   terminalStage: element<HTMLElement>('terminal-stage'),
   terminalElement: element<HTMLElement>('terminal'),
@@ -379,7 +383,6 @@ let connectionState: ConnectionState = 'idle';
 let sessionStartedAt = 0;
 let uptimeTimer: number | null = null;
 let pingTimer: number | null = null;
-let lastPingAt = 0;
 let pendingHostKey: HostKeyPrompt | null = null;
 let currentTargetKey = '';
 let currentTargetLabel = '';
@@ -407,6 +410,151 @@ let panelOpen = false;
 let fileManager: FileManager;
 let fileTree: FileTree;
 let processManager: ProcessManager;
+
+// Network rate state. The backend only sends cumulative byte counters per
+// sample; we differentiate them with a local clock (server timestamp) to
+// derive the upload / download rate that drives the toolbar sparkline.
+// `lastRx/lastTx/lastTs` are null until the first valid sample is received;
+// on reset we clear them so the next sample is treated as a fresh baseline.
+let netLastRx: number | null = null;
+let netLastTx: number | null = null;
+let netLastTs: number | null = null;
+// 60-point ring buffer of the per-tick throughput magnitude (max of rx/tx).
+// The newest sample lives at `netSparkIdx - 1`; the oldest at `netSparkIdx`
+// once the buffer wraps, or at index 0 while it is still filling.
+const NET_SPARK_POINTS = 60;
+const netSpark = new Float32Array(NET_SPARK_POINTS);
+let netSparkIdx = 0;
+let netSparkFilled = 0;
+let netBaselineEstablished = false;
+
+const NET_RATE_UNITS = ['B', 'KB', 'MB', 'GB'] as const;
+
+function formatNetworkRate(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return '0 B/s';
+  let v = value;
+  let unitIndex = 0;
+  while (v >= 1024 && unitIndex < NET_RATE_UNITS.length - 1) {
+    v /= 1024;
+    unitIndex += 1;
+  }
+  const text = v < 10 ? v.toFixed(1) : v.toFixed(0);
+  return `${text}${NET_RATE_UNITS[unitIndex]}/s`;
+}
+
+function drawNetworkSparkline(): void {
+  const canvas = ui.resourceNetworkSparkline;
+  const dpr = window.devicePixelRatio && window.devicePixelRatio > 0 ? window.devicePixelRatio : 1;
+  // Use clientWidth (CSS px) scaled by DPR for the backing store, so the
+  // bitmap stays crisp on Hi-DPI displays without forcing the parent layout.
+  const cssWidth = canvas.clientWidth || 184;
+  const cssHeight = canvas.clientHeight || 22;
+  const width = Math.max(1, Math.round(cssWidth * dpr));
+  const height = Math.max(1, Math.round(cssHeight * dpr));
+  if (canvas.width !== width) canvas.width = width;
+  if (canvas.height !== height) canvas.height = height;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  ctx.clearRect(0, 0, width, height);
+  if (netSparkFilled === 0) return;
+  // Build a chronological copy so the rest of the math is index-stable.
+  const data = new Array<number>(NET_SPARK_POINTS).fill(0);
+  const start = netSparkFilled < NET_SPARK_POINTS ? 0 : netSparkIdx;
+  for (let i = 0; i < NET_SPARK_POINTS; i += 1) {
+    data[i] = netSpark[(start + i) % NET_SPARK_POINTS];
+  }
+  let minimum = data[0];
+  let maximum = data[0];
+  for (const v of data) {
+    if (v < minimum) minimum = v;
+    if (v > maximum) maximum = v;
+  }
+  // `span = max(mx - mn, 1)` keeps the bar heights defined even when every
+  // sample is identical (all bars collapse to the zero-line without div-by-zero).
+  const span = Math.max(maximum - minimum, 1);
+  const slot = width / NET_SPARK_POINTS;
+  // Leave a small gap between bars; floor so a 1px slot still draws a visible bar.
+  const barWidth = Math.max(1, Math.floor(slot * 0.7));
+  ctx.fillStyle = '#69e6b4';
+  for (let i = 0; i < NET_SPARK_POINTS; i += 1) {
+    const value = data[i];
+    const normalized = (value - minimum) / span;
+    const barHeight = Math.max(1, Math.round(normalized * (height - 1)));
+    const x = Math.round(i * slot + ((slot - barWidth) / 2));
+    const y = height - barHeight;
+    ctx.fillRect(x, y, barWidth, barHeight);
+  }
+}
+
+function updateNetworkMetric(sample: NetworkSample | null, timestamp: number): void {
+  if (!sample) {
+    // The server may briefly stop sending a network section (e.g. busybox
+    // sh without /sys/class/net). Don't tear down the toolbar block on a
+    // single missing tick — only reset on a full teardown. The next valid
+    // sample will overwrite the UI state.
+    return;
+  }
+  if (ui.resourceNetwork.hidden) ui.resourceNetwork.hidden = false;
+  ui.resourceNetworkIface.textContent = sample.iface;
+  if (netLastTs === null) {
+    // First valid sample: stash the counters and timestamp; rate and sparkline
+    // both show zero until we have a second sample to diff against.
+    netLastRx = sample.rxBytes;
+    netLastTx = sample.txBytes;
+    netLastTs = timestamp;
+    if (!netBaselineEstablished) {
+      netSpark.fill(0);
+      netSparkIdx = 0;
+      netSparkFilled = 0;
+      netBaselineEstablished = true;
+    }
+    drawNetworkSparkline();
+    ui.resourceNetworkRateUp.textContent = `↑ ${formatNetworkRate(0)}`;
+    ui.resourceNetworkRateDown.textContent = `↓ ${formatNetworkRate(0)}`;
+    return;
+  }
+  // `timestamp` is in milliseconds; clamp to a tiny positive value so a
+  // pathological zero/negative delta (rare clock skew) cannot divide-by-zero
+  // or produce an infinite rate.
+  const deltaSeconds = Math.max(0.001, (timestamp - (netLastTs ?? timestamp)) / 1000);
+  const deltaRx = Math.max(0, sample.rxBytes - (netLastRx ?? sample.rxBytes));
+  const deltaTx = Math.max(0, sample.txBytes - (netLastTx ?? sample.txBytes));
+  const rxRate = deltaRx / deltaSeconds;
+  const txRate = deltaTx / deltaSeconds;
+  netLastRx = sample.rxBytes;
+  netLastTx = sample.txBytes;
+  netLastTs = timestamp;
+  // Use the larger of the two rates as the sparkline magnitude so a
+  // quiescent direction doesn't make the chart look half-dead.
+  const magnitude = Math.max(rxRate, txRate);
+  netSpark[netSparkIdx] = magnitude;
+  netSparkIdx = (netSparkIdx + 1) % NET_SPARK_POINTS;
+  if (netSparkFilled < NET_SPARK_POINTS) netSparkFilled += 1;
+  drawNetworkSparkline();
+  // `↑` = upload (tx), `↓` = download (rx) — match the toolbar arrow convention.
+  ui.resourceNetworkRateUp.textContent = `↑ ${formatNetworkRate(txRate)}`;
+  ui.resourceNetworkRateDown.textContent = `↓ ${formatNetworkRate(rxRate)}`;
+}
+
+function resetNetworkMetric(): void {
+  // Idempotent: only touch the DOM / state if the block is currently visible,
+  // so repeated resets (one per processManager.reset() call site) are cheap.
+  if (ui.resourceNetwork.hidden && netBaselineEstablished === false && netLastTs === null) return;
+  ui.resourceNetwork.hidden = true;
+  ui.resourceNetworkIface.textContent = '-';
+  ui.resourceNetworkRateUp.textContent = `↑ ${formatNetworkRate(0)}`;
+  ui.resourceNetworkRateDown.textContent = `↓ ${formatNetworkRate(0)}`;
+  const canvas = ui.resourceNetworkSparkline;
+  const ctx = canvas.getContext('2d');
+  if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
+  netLastRx = null;
+  netLastTx = null;
+  netLastTs = null;
+  netSpark.fill(0);
+  netSparkIdx = 0;
+  netSparkFilled = 0;
+  netBaselineEstablished = false;
+}
 
 const terminal = new Terminal({
   allowProposedApi: false,
@@ -446,6 +594,7 @@ processManager = new ProcessManager({
   onError: (message) => event(message, 'process', true),
   onReconnect: (zh, en) => event(bilingual(zh, en), 'process'),
   onToast: (zh, en, kind) => toast(bilingual(zh, en), kind),
+  onNetworkSample: (sample, timestamp) => updateNetworkMetric(sample, timestamp),
 });
 
 function terminalTheme(): Record<string, string> {
@@ -1188,8 +1337,7 @@ function startTimers(): void {
   uptimeTimer = window.setInterval(updateUptime, 1_000);
   pingTimer = window.setInterval(() => {
     if (socket?.readyState !== WebSocket.OPEN) return;
-    lastPingAt = performance.now();
-    socket.send(JSON.stringify({ type: 'ping', ts: Date.now() }));
+    socket.send(JSON.stringify({ type: 'ping' }));
   }, PING_INTERVAL_MS);
 }
 
@@ -1355,14 +1503,6 @@ function handleServerMessage(message: ServerMessage): void {
     event(bilingual('进程监控通道已可用。', 'Process monitor channel is available.'), 'process');
     return;
   }
-  if (type === 'pong') {
-    if (lastPingAt > 0) ui.metricRtt.textContent = `${Math.max(1, Math.round(performance.now() - lastPingAt))} ms`;
-    return;
-  }
-  if (type === 'rtt') {
-    if (typeof message.latency === 'number') ui.metricRtt.textContent = `${Math.round(message.latency)} ms`;
-    return;
-  }
   if (type === 'host_key') {
     const fingerprint = message.fingerprint ?? '';
     const keyType = message.keyType ?? '';
@@ -1477,6 +1617,7 @@ function failActiveConnection(activeSocket: WebSocket | null, closeReason: strin
   fileManager.reset();
   fileTree?.setReady(false);
   processManager.reset();
+  resetNetworkMetric();
   clearHostKeyPrompt();
   invalidateHistoryPasswordLoad();
   updateConnectionStatus(displayReason);
@@ -1511,6 +1652,9 @@ async function connect(): Promise<void> {
   if (historyPasswordLoading) return;
   historyPasswordLoadGeneration++;
   historyPasswordLoading = false;
+  // Fresh baseline for a new session: the previous run may have left counters
+  // in `netLastRx` etc. if the user navigated away without closing cleanly.
+  resetNetworkMetric();
   applyFormDefaults();
   const validationError = validateConnectForm();
   if (validationError) {
@@ -1548,7 +1692,6 @@ async function connect(): Promise<void> {
   decoder = createDecoder(ui.encoding.value);
   ui.sessionTitle.textContent = currentTargetLabel;
   updateConnectionStatus(localized('正在授权 Worker 会话...', 'Authorizing Worker session...'));
-  ui.metricRtt.textContent = '--';
   ui.metricHostKey.textContent = '--';
   event(bilingual(`正在连接 ${currentTargetLabel}`, `Starting ${currentTargetLabel}`), 'connect');
 
@@ -1620,6 +1763,7 @@ async function connect(): Promise<void> {
       fileManager.reset();
       fileTree?.setReady(false);
       processManager.reset();
+      resetNetworkMetric();
       clearHostKeyPrompt();
       invalidateHistoryPasswordLoad();
       const wasActive = connectionState === 'connected';
@@ -1665,6 +1809,7 @@ function disconnect(reason = bilingual('已由用户断开连接', 'Disconnected
   fileManager.reset();
   fileTree?.setReady(false);
   processManager.reset();
+  resetNetworkMetric();
   clearHostKeyPrompt();
   invalidateHistoryPasswordLoad();
   currentExpectedFingerprint = '';
@@ -1953,6 +2098,7 @@ window.addEventListener('beforeunload', () => {
   fileTree?.setReady(false);
   fileTree?.destroy();
   processManager.reset();
+  resetNetworkMetric();
   socket?.close(1000, 'Page closed');
 });
 document.addEventListener('keydown', (keyEvent) => {

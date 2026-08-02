@@ -288,9 +288,18 @@
                     </div>
                     <progress id="resource-swap-progress" max="100" value="0" aria-label="Swap 使用率" data-i18n-aria-label-zh="Swap 使用率" data-i18n-aria-label-en="Swap usage"></progress>
                   </div>
+                  <div class="resource-metric resource-network" id="resource-network" hidden>
+                    <div class="resource-metric-line">
+                      <strong id="resource-network-iface" class="resource-detail">-</strong>
+                      <div class="resource-network-rates">
+                        <strong id="resource-network-rate-up">↑ 0 B/s</strong>
+                        <strong id="resource-network-rate-down">↓ 0 B/s</strong>
+                      </div>
+                    </div>
+                    <canvas id="resource-network-sparkline" class="resource-sparkline" width="184" height="12" aria-label="网络速率" data-i18n-aria-label-zh="网络速率" data-i18n-aria-label-en="Network rate"></canvas>
+                  </div>
                 </div>
                 <div class="session-metrics">
-                  <div><span data-i18n-zh="延迟" data-i18n-en="RTT">延迟</span><strong id="metric-rtt">--</strong></div>
                   <div><span data-i18n-zh="时长" data-i18n-en="UPTIME">时长</span><strong id="metric-uptime">00:00</strong></div>
                   <div><span data-i18n-zh="主机密钥" data-i18n-en="HOST KEY">主机密钥</span><strong id="metric-host-key">--</strong></div>
                 </div>

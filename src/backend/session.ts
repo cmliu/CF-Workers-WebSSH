@@ -105,7 +105,14 @@ const PROCESS_SNAPSHOT_MARKER = '__CF_WEBSSH_TOP_SNAPSHOT__';
 //   Linux:    top -b -c -n 1 -w 0  ||  top -b -c -n 1  ||  top -b -n 1
 //   FreeBSD:  top -b -a -d 1            (batch, all processes, 1 iteration)
 //   macOS:    top -l 1 -c -n 0 -s 0     (1 log sample, full command line, all processes, no delay)
-const PROCESS_MONITOR_COMMAND = "LC_ALL=C LANG=C sh -c 'os=$(uname -s 2>/dev/null || echo Linux); export COLUMNS=4096; while :; do printf \"\\137\\137CF_WEBSSH_TOP_SNAPSHOT\\137\\137\\n\"; case \"$os\" in FreeBSD) top -b -a -d 1 2>/dev/null || exit 127;; Darwin) top -l 1 -c -n 0 -s 0 2>/dev/null || exit 127;; *) top -b -c -n 1 -w 0 2>/dev/null || top -b -c -n 1 2>/dev/null || top -b -n 1 2>/dev/null || exit 127;; esac; sleep 2; done'";
+// Network sampling: every loop iteration prints an empty `__CF_WEBSSH_NETWORK__` block after top
+// and (best-effort) populates it with the first non-virtual interface's cumulative rx/tx bytes.
+// The Linux branch reads /sys/class/net/<iface>/statistics/{rx,tx}_bytes and skips lo/docker/veth/
+// bridge/tun/tailscale names so we never accidentally chart a container virtual NIC. The macOS
+// fallback runs `netstat -ibn` and takes the first <Link#N> row that is not `lo*`. Any failure
+// (no /sys/class/net, netstat missing, non-numeric counters) leaves the block empty and the
+// frontend treats the tick as "no network sample".
+const PROCESS_MONITOR_COMMAND = "LC_ALL=C LANG=C sh -c 'os=$(uname -s 2>/dev/null || echo Linux); export COLUMNS=4096; while :; do printf \"\\137\\137CF_WEBSSH_TOP_SNAPSHOT\\137\\137\\n\"; case \"$os\" in FreeBSD) top -b -a -d 1 2>/dev/null || exit 127;; Darwin) top -l 1 -c -n 0 -s 0 2>/dev/null || exit 127;; *) top -b -c -n 1 -w 0 2>/dev/null || top -b -c -n 1 2>/dev/null || top -b -n 1 2>/dev/null || exit 127;; esac; printf \"\\137\\137CF_WEBSSH_NETWORK\\137\\137\\n\"; if [ -d /sys/class/net ]; then for NDIR in /sys/class/net/*; do [ -d \"$NDIR\" ] || continue; NAME=${NDIR##*/}; case \"$NAME\" in lo|docker*|veth*|br-*|tun*|tailscale*) continue;; esac; RX=$(cat \"$NDIR/statistics/rx_bytes\" 2>/dev/null) || continue; TX=$(cat \"$NDIR/statistics/tx_bytes\" 2>/dev/null) || continue; case \"$RX$TX\" in *[!0-9]*) continue;; esac; printf \"%s\\t%s\\t%s\\n\" \"$NAME\" \"$RX\" \"$TX\"; break; done; elif command -v netstat >/dev/null 2>&1; then netstat -ibn 2>/dev/null | grep -v \"^lo\" | grep \"<Link#[0-9]>\" | head -n 1 | awk -v OFS=\"\\t\" \"{print \\$1, \\$7, \\$10}\"; fi; sleep 2; done'";
 const KEEPALIVE_NAME = new TextEncoder().encode('keepalive@openssh.com');
 
 export class SSHSession {
