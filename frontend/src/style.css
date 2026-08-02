@@ -1114,6 +1114,18 @@ button:disabled {
   cursor: pointer;
 }
 
+/* Explicit <option> colors (bugfix): the narrow-viewport overlay turns the
+   <select> itself into color: transparent; some mobile browsers (Android
+   Chrome / WebView) make the popped-up option list INHERIT that transparent
+   color, which rendered as white-on-white (invisible) options. Giving <option>
+   an explicit dark theme — same palette as the desktop select — keeps the
+   native picker readable on every platform. Note: iOS Safari renders its own
+   system wheel picker that is not styleable via CSS (platform limitation). */
+.resource-network .resource-network-select option {
+  background-color: #182530;
+  color: #d4e0e5;
+}
+
 .resource-network .resource-network-select:hover,
 .resource-network .resource-network-select:focus-visible {
   border-color: var(--accent);
