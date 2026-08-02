@@ -1089,11 +1089,6 @@ button:disabled {
   align-self: stretch;    /* cross-axis 拉满父容器高度方向 */
 }
 
-.resource-network .resource-metric-line > strong.resource-detail + strong.resource-detail {
-  color: #d4e0e5;
-  font-weight: 750;
-}
-
 .resource-network #resource-network-iface {
   flex: 0 0 auto;
   color: #8fa2ad;

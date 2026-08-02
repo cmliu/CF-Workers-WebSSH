@@ -41,9 +41,9 @@ export interface ProcessSnapshot {
 
 const ANSI_ESCAPE_RE = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))/g;
 const MAX_PROCESSES = 512;
-// Matches the network section the shell command emits between successive
-// `__CF_WEBSSH_NETWORK__` markers. The marker mirrors the top-snapshot marker
-// (octal escapes for `_`) so the same framing primitives work for both blocks.
+// Matches the network section the shell command emits after a single
+// `__CF_WEBSSH_NETWORK__` marker per tick. The marker mirrors the top-snapshot
+// marker (octal escapes for `_`) so the same framing primitives apply.
 const PROCESS_NETWORK_MARKER = '__CF_WEBSSH_NETWORK__';
 
 // Matches a single numeric token that may use ',' or '.' as decimal separator.
@@ -248,12 +248,13 @@ function parseNonNegativeInteger(value: string | undefined | null): number | nul
   return Number.isSafeInteger(parsed) ? parsed : null;
 }
 
-// Extracts the single network interface sample embedded between the network
-// markers. The payload is whitespace-separated (tabs inserted by `printf` on
-// Linux, OFS in awk on macOS), so any run of whitespace is a valid separator.
-// If the marker is missing, the section is empty, or any required field is
-// invalid, returns null — the caller treats this as "no sample" and keeps the
-// network block hidden.
+// Extracts the single network interface sample from the network section, which
+// starts at the `__CF_WEBSSH_NETWORK__` marker and runs to the end of the
+// snapshot (or to a second marker if one exists). The payload is whitespace-
+// separated (tabs inserted by `printf` on Linux, OFS in awk on macOS), so any
+// run of whitespace is a valid separator. If the marker is missing, the section
+// is empty, or any required field is invalid, returns null — the caller treats
+// this as "no sample" and keeps the network block hidden.
 export function parseNetwork(raw: string): NetworkSample | null {
   const cleaned = raw.replace(ANSI_ESCAPE_RE, '').replace(/\r/g, '');
   const start = cleaned.indexOf(PROCESS_NETWORK_MARKER);
