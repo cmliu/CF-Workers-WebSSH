@@ -101,10 +101,9 @@ const MAX_PROCESSES = 512;
 // per tick. Mirrors the shell/parser cap (src/backend) so a hostile or
 // misbehaving host cannot flood the frontend with rows.
 const MAX_NETWORK_INTERFACES = 32;
-// Auto-reconnect backoff for the process monitor after an unexpected drop.
-const RECONNECT_BASE_MS = 1_000;
-const RECONNECT_MAX_MS = 15_000;
-const RECONNECT_MAX_ATTEMPTS = 10;
+// Auto-reconnect for the process monitor after an unexpected drop.
+const RECONNECT_MAX_ATTEMPTS = 3;
+const RECONNECT_DELAYS: readonly number[] = [1000, 2000, 4000];
 // Hard cap on the stdout/stderr text we render from a kill result. Backend already truncates
 // the wire payload, but the frontend keeps its own ceiling so a malformed payload cannot fill
 // the dialog / toast with megabytes of text.
@@ -282,6 +281,7 @@ export class ProcessManager {
   attach(url: string): void {
     this.wantConnection = true;
     this.url = url;
+    this.reconnectAttempts = 0;
     this.resetSocket();
     const target = new URL(url, window.location.href);
     if (target.origin !== window.location.origin || target.pathname !== '/api/processes') {
@@ -294,6 +294,11 @@ export class ProcessManager {
     this.setStatus('正在启动进程监控…', 'Starting process monitor…');
     socket.addEventListener('open', () => {
       if (!this.isCurrent(socket, generation)) return;
+      if (this.reconnectAttempts > 0) {
+        console.log(
+          `[WS-Reconnect] ${new Date().toISOString()} | Process | reconnect_success | attempt=${this.reconnectAttempts}/${RECONNECT_MAX_ATTEMPTS}`,
+        );
+      }
       this.reconnectAttempts = 0;
       socket.send(JSON.stringify({ type: 'process_start' }));
     });
@@ -307,6 +312,9 @@ export class ProcessManager {
     });
     socket.addEventListener('close', (event) => {
       if (!this.isCurrent(socket, generation)) return;
+      console.log(
+        `[WS-Reconnect] ${new Date().toISOString()} | Process | disconnect | code=${event.code} | reason="${event.reason}"`,
+      );
       this.socket = null;
       if (event.code !== 1000 && event.code !== 1005) {
         // Unexpected drop. Auto-reconnect unless the user intentionally tore the session down.
@@ -836,22 +844,47 @@ export class ProcessManager {
     if (!this.wantConnection || !this.url || this.reconnectTimer !== null) return;
     this.reconnectAttempts++;
     if (this.reconnectAttempts > RECONNECT_MAX_ATTEMPTS) {
+      console.log(
+        `[WS-Reconnect] ${new Date().toISOString()} | Process | give_up | attempt=${this.reconnectAttempts - 1}/${RECONNECT_MAX_ATTEMPTS}`,
+      );
       this.reconnectAttempts = 0;
       this.showError('进程监控已意外停止。', 'Process monitor stopped unexpectedly.');
       return;
     }
-    const delay = Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * (2 ** (this.reconnectAttempts - 1)));
+    const delayIndex = this.reconnectAttempts - 1;
+    const delay = delayIndex < RECONNECT_DELAYS.length
+      ? RECONNECT_DELAYS[delayIndex]
+      : RECONNECT_DELAYS[RECONNECT_DELAYS.length - 1];
+    console.log(
+      `[WS-Reconnect] ${new Date().toISOString()} | Process | reconnect_attempt | attempt=${this.reconnectAttempts}/${RECONNECT_MAX_ATTEMPTS}`,
+    );
     if (this.reconnectAttempts === 1 && this.onReconnect) {
       this.onReconnect('进程监控已意外停止，正在尝试自动重连…', 'Process monitor stopped unexpectedly; attempting to reconnect automatically…');
     }
     this.setStatus('进程监控连接已断开，正在重连…', 'Process monitor disconnected; reconnecting…');
+    const attempts = this.reconnectAttempts;
     this.reconnectTimer = window.setTimeout(() => {
       this.reconnectTimer = null;
       if (!this.wantConnection || !this.url) return;
       try {
         this.attach(this.url);
       } catch {
+        console.log(
+          `[WS-Reconnect] ${new Date().toISOString()} | Process | reconnect_failed | attempt=${attempts}/${RECONNECT_MAX_ATTEMPTS}`,
+        );
+        // attach() zeroed the counter; restore so the retry chain continues
+        // where it left off instead of restarting from attempt 1.
+        if (this.wantConnection) {
+          this.reconnectAttempts = attempts;
+        }
         this.scheduleReconnect();
+        return;
+      }
+      // Successful attach() zeros reconnectAttempts; restore so the open
+      // handler can log reconnect_success and the back-off chain continues
+      // if close fires before open confirms.
+      if (this.wantConnection) {
+        this.reconnectAttempts = attempts;
       }
     }, delay);
   }

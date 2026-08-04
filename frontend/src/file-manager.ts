@@ -102,10 +102,9 @@ const DISCONNECTED_CHANNEL: LocalizedText = {
   en: 'File management connection lost',
 };
 
-// Auto-reconnect backoff for the file manager after an unexpected drop.
-const RECONNECT_BASE_MS = 1_000;
-const RECONNECT_MAX_MS = 15_000;
-const RECONNECT_MAX_ATTEMPTS = 10;
+// Auto-reconnect for the file manager after an unexpected drop.
+const RECONNECT_MAX_ATTEMPTS = 3;
+const RECONNECT_DELAYS: readonly number[] = [1000, 2000, 4000];
 
 function requiredElement<T extends Element>(root: ParentNode, id: string): T {
   const node = root.querySelector<T>(`#${id}`);
@@ -273,6 +272,11 @@ export class FileManager {
 
     socket.addEventListener('open', () => {
       if (!this.isCurrent(socket, generation)) return;
+      if (this.reconnectAttempts > 0) {
+        console.log(
+          `[WS-Reconnect] ${new Date().toISOString()} | SFTP | reconnect_success | attempt=${this.reconnectAttempts}/${RECONNECT_MAX_ATTEMPTS}`,
+        );
+      }
       this.reconnectAttempts = 0;
       this.init();
     });
@@ -288,6 +292,9 @@ export class FileManager {
     });
     socket.addEventListener('close', (event: CloseEvent) => {
       if (!this.isCurrent(socket, generation)) return;
+      console.log(
+        `[WS-Reconnect] ${new Date().toISOString()} | SFTP | disconnect | code=${event.code} | reason="${event.reason}"`,
+      );
       this.socket = null;
       this.ready = false;
       this.abortTransfers(false);
@@ -1219,11 +1226,20 @@ export class FileManager {
     if (!this.wantConnection || !this.url || this.reconnectTimer !== null) return;
     this.reconnectAttempts++;
     if (this.reconnectAttempts > RECONNECT_MAX_ATTEMPTS) {
+      console.log(
+        `[WS-Reconnect] ${new Date().toISOString()} | SFTP | give_up | attempt=${this.reconnectAttempts - 1}/${RECONNECT_MAX_ATTEMPTS}`,
+      );
       this.reconnectAttempts = 0;
       this.renderDisconnected(true, { zh: '文件管理重连失败。', en: 'File manager reconnect failed.' });
       return;
     }
-    const delay = Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * (2 ** (this.reconnectAttempts - 1)));
+    const delayIndex = this.reconnectAttempts - 1;
+    const delay = delayIndex < RECONNECT_DELAYS.length
+      ? RECONNECT_DELAYS[delayIndex]
+      : RECONNECT_DELAYS[RECONNECT_DELAYS.length - 1];
+    console.log(
+      `[WS-Reconnect] ${new Date().toISOString()} | SFTP | reconnect_attempt | attempt=${this.reconnectAttempts}/${RECONNECT_MAX_ATTEMPTS}`,
+    );
     this.setStatus({
       zh: '文件管理连接已断开，正在重连…',
       en: 'File manager disconnected; reconnecting…',
@@ -1235,6 +1251,9 @@ export class FileManager {
       try {
         this.attach(this.url);
       } catch {
+        console.log(
+          `[WS-Reconnect] ${new Date().toISOString()} | SFTP | reconnect_failed | attempt=${attempts}/${RECONNECT_MAX_ATTEMPTS}`,
+        );
         // attach() → reset() zeroed the counter; restore so the next
         // close handler's scheduleReconnect() continues accumulating.
         if (this.wantConnection) {
@@ -1243,9 +1262,9 @@ export class FileManager {
         this.scheduleReconnect();
         return;
       }
-      // Successful attach(); reset() already zeroed the counter.
-      // Restore so that if a close fires before the 'open' handler
-      // can confirm the connection, the back-off chain continues.
+      // Successful attach(). The open handler will log reconnect_success
+      // once the WebSocket actually connects; for now restore the counter
+      // so that if a close fires before open confirms, back-off continues.
       if (this.wantConnection) {
         this.reconnectAttempts = attempts;
       }
