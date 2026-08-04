@@ -872,7 +872,13 @@ export class ProcessManager {
         console.log(
           `[WS-Reconnect] ${new Date().toISOString()} | Process | reconnect_failed | attempt=${attempts}/${RECONNECT_MAX_ATTEMPTS}`,
         );
+        // attach() zeroed the counter; restore so the retry chain continues
+        // where it left off instead of restarting from attempt 1.
+        if (this.wantConnection) {
+          this.reconnectAttempts = attempts;
+        }
         this.scheduleReconnect();
+        return;
       }
       // Successful attach() zeros reconnectAttempts; restore so the open
       // handler can log reconnect_success and the back-off chain continues
