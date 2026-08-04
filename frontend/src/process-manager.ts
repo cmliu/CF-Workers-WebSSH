@@ -281,6 +281,7 @@ export class ProcessManager {
   attach(url: string): void {
     this.wantConnection = true;
     this.url = url;
+    this.reconnectAttempts = 0;
     this.resetSocket();
     const target = new URL(url, window.location.href);
     if (target.origin !== window.location.origin || target.pathname !== '/api/processes') {
@@ -872,6 +873,12 @@ export class ProcessManager {
           `[WS-Reconnect] ${new Date().toISOString()} | Process | reconnect_failed | attempt=${attempts}/${RECONNECT_MAX_ATTEMPTS}`,
         );
         this.scheduleReconnect();
+      }
+      // Successful attach() zeros reconnectAttempts; restore so the open
+      // handler can log reconnect_success and the back-off chain continues
+      // if close fires before open confirms.
+      if (this.wantConnection) {
+        this.reconnectAttempts = attempts;
       }
     }, delay);
   }

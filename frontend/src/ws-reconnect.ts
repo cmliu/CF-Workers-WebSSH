@@ -62,7 +62,7 @@ export class WebSocketReconnectManager {
   constructor(config: ReconnectConfig) {
     this.id = config.id;
     this.maxAttempts = config.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
-    this.delays = config.delays ?? [...DEFAULT_DELAYS];
+    this.delays = config.delays?.length ? config.delays : [...DEFAULT_DELAYS];
     this.onConnect = config.onConnect;
     this.onLog = config.onLog;
   }
