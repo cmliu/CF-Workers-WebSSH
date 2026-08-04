@@ -1262,12 +1262,9 @@ export class FileManager {
         this.scheduleReconnect();
         return;
       }
-      console.log(
-        `[WS-Reconnect] ${new Date().toISOString()} | SFTP | reconnect_success | attempt=${attempts}/${RECONNECT_MAX_ATTEMPTS}`,
-      );
-      // Successful attach(); reset() already zeroed the counter.
-      // Restore so that if a close fires before the 'open' handler
-      // can confirm the connection, the back-off chain continues.
+      // Successful attach(). The open handler will log reconnect_success
+      // once the WebSocket actually connects; for now restore the counter
+      // so that if a close fires before open confirms, back-off continues.
       if (this.wantConnection) {
         this.reconnectAttempts = attempts;
       }

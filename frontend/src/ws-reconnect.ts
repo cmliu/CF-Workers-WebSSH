@@ -77,6 +77,9 @@ export class WebSocketReconnectManager {
    */
   attach(socket: WebSocket): void {
     if (this.destroyed) return;
+    // Avoid stacking duplicate close listeners when the same socket is
+    // re-attached (the existing listener already calls handleClose).
+    if (this.socket === socket) return;
     this.socket = socket;
     this.socket.addEventListener('close', (event: CloseEvent) => this.handleClose(event));
   }
@@ -125,7 +128,15 @@ export class WebSocketReconnectManager {
       return;
     }
 
-    this.startReconnect();
+    if (this.reconnecting) {
+      // The current reconnect attempt's socket closed before the `open`
+      // event confirmed success (e.g. CONNECTING → error).  Continue
+      // retrying from the current attempt counter so we don't loop
+      // infinitely on the same attempt number.
+      this.tryReconnect();
+    } else {
+      this.startReconnect();
+    }
   }
 
   private startReconnect(): void {
@@ -193,18 +204,29 @@ export class WebSocketReconnectManager {
         return;
       }
 
+      const onConnectSuccess = (): void => {
+        if (this.destroyed || this.socket !== newSocket) return;
+        this.reconnecting = false;
+        this.log({
+          timestamp: new Date().toISOString(),
+          id: this.id,
+          event: 'reconnect_success',
+          attempt: attemptSnapshot,
+          maxAttempts: this.maxAttempts,
+        });
+      };
+
       // Re-attach the close listener so future drops are also handled.
       this.socket = newSocket;
       this.socket.addEventListener('close', (event: CloseEvent) => this.handleClose(event));
-      this.reconnecting = false;
 
-      this.log({
-        timestamp: new Date().toISOString(),
-        id: this.id,
-        event: 'reconnect_success',
-        attempt: attemptSnapshot,
-        maxAttempts: this.maxAttempts,
-      });
+      // Only declare success after the WebSocket actually opens —
+      // onConnect() may return while the socket is still CONNECTING.
+      if (newSocket.readyState === WebSocket.OPEN) {
+        onConnectSuccess();
+      } else {
+        newSocket.addEventListener('open', onConnectSuccess, { once: true });
+      }
     } catch {
       if (this.destroyed) {
         this.reconnecting = false;
