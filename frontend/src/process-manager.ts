@@ -293,6 +293,11 @@ export class ProcessManager {
     this.setStatus('正在启动进程监控…', 'Starting process monitor…');
     socket.addEventListener('open', () => {
       if (!this.isCurrent(socket, generation)) return;
+      if (this.reconnectAttempts > 0) {
+        console.log(
+          `[WS-Reconnect] ${new Date().toISOString()} | Process | reconnect_success | attempt=${this.reconnectAttempts}/${RECONNECT_MAX_ATTEMPTS}`,
+        );
+      }
       this.reconnectAttempts = 0;
       socket.send(JSON.stringify({ type: 'process_start' }));
     });

@@ -272,6 +272,11 @@ export class FileManager {
 
     socket.addEventListener('open', () => {
       if (!this.isCurrent(socket, generation)) return;
+      if (this.reconnectAttempts > 0) {
+        console.log(
+          `[WS-Reconnect] ${new Date().toISOString()} | SFTP | reconnect_success | attempt=${this.reconnectAttempts}/${RECONNECT_MAX_ATTEMPTS}`,
+        );
+      }
       this.reconnectAttempts = 0;
       this.init();
     });

@@ -106,6 +106,11 @@ export class WebSocketReconnectManager {
 
   private handleClose(event: CloseEvent): void {
     if (this.destroyed) return;
+    // Guard: ignore close events from superseded sockets that have been
+    // replaced by a newer attach() or a successful reconnect.  Without
+    // this check a stale socket closing later could trigger a spurious
+    // reconnection cycle.
+    if (event.target !== this.socket) return;
 
     this.log({
       timestamp: new Date().toISOString(),
