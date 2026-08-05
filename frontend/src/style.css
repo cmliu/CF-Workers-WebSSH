@@ -2993,11 +2993,6 @@ button:disabled {
     gap: 4px;
   }
 
-  .mobile-toolbar-row-secondary {
-    padding-top: 4px;
-    border-top: 1px solid color-mix(in srgb, var(--border) 45%, transparent);
-  }
-
   /* ── Individual key button ──────────────────────────────────── */
 
   .mobile-key-btn {

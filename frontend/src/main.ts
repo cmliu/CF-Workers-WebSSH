@@ -2362,15 +2362,26 @@ function updateMobileToolbarVisibility(): void {
   const isTouchDevice = window.matchMedia('(pointer: coarse)').matches;
   const shouldShow = isTouchDevice && connectionState === 'connected';
   toolbar.hidden = !shouldShow;
+  const panel = document.getElementById('mobile-toolbar-panel');
+  const toggle = document.getElementById('mobile-toolbar-toggle');
   if (!shouldShow) {
-    const panel = document.getElementById('mobile-toolbar-panel');
     if (panel) panel.hidden = true;
-    const toggle = document.getElementById('mobile-toolbar-toggle');
     if (toggle) {
       toggle.setAttribute('aria-expanded', 'false');
       toggle.setAttribute('aria-label', bilingual('打开快捷键工具栏', 'Open shortcut toolbar'));
       toggle.title = bilingual('快捷键', 'Shortcuts');
     }
+  } else if (toggle && panel) {
+    // Sync toggle state with current panel visibility
+    // (essential after applyLanguage() rewrites aria-label/title from data-i18n-*)
+    const isExpanded = !panel.hidden;
+    toggle.setAttribute('aria-expanded', String(isExpanded));
+    toggle.setAttribute('aria-label', isExpanded
+      ? bilingual('关闭快捷键工具栏', 'Close shortcut toolbar')
+      : bilingual('打开快捷键工具栏', 'Open shortcut toolbar'));
+    toggle.title = isExpanded
+      ? bilingual('关闭快捷键工具栏', 'Close shortcut toolbar')
+      : bilingual('快捷键', 'Shortcuts');
   }
 }
 
@@ -2385,13 +2396,13 @@ function initMobileToolbar(): void {
   // Toggle expand / collapse
   toggle.addEventListener('click', (clickEvent: Event) => {
     clickEvent.stopPropagation();
-    const isOpen = panel.hidden;
-    panel.hidden = !isOpen;
-    toggle.setAttribute('aria-expanded', String(isOpen));
-    toggle.setAttribute('aria-label', isOpen
+    const wasHidden = panel.hidden;
+    panel.hidden = !wasHidden;
+    toggle.setAttribute('aria-expanded', String(wasHidden));
+    toggle.setAttribute('aria-label', wasHidden
       ? bilingual('关闭快捷键工具栏', 'Close shortcut toolbar')
       : bilingual('打开快捷键工具栏', 'Open shortcut toolbar'));
-    toggle.title = isOpen
+    toggle.title = wasHidden
       ? bilingual('关闭快捷键工具栏', 'Close shortcut toolbar')
       : bilingual('快捷键', 'Shortcuts');
   });
