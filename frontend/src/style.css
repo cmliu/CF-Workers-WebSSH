@@ -2870,6 +2870,208 @@ button:disabled {
   }
 }
 
+/* ── Mobile shortcut key toolbar ─────────────────────────────────── */
+
+/* Hidden by default — CSS media query reveals it on touch devices. */
+#mobile-toolbar {
+  display: none;
+}
+
+/* Touch-screen inline shortcut toolbar.
+   Uses pointer:coarse (≈ touch) as the primary gate; width cap as
+   a secondary safety rail so the bar never appears on a large tablet
+   with a stylus or trackpad that falsely reports coarse. */
+@media (pointer: coarse) and (max-width: 768px) {
+  #mobile-toolbar {
+    display: block;
+    position: absolute;
+    bottom: 6px;
+    right: 6px;
+    z-index: 20;
+  }
+
+  /* ── Toggle button ──────────────────────────────────────────── */
+
+  .mobile-toolbar-toggle {
+    display: grid;
+    width: 42px;
+    height: 42px;
+    place-items: center;
+    border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--border));
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--surface-2) 92%, transparent);
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.45);
+    color: var(--accent);
+    cursor: pointer;
+    transition: background 150ms ease, border-color 150ms ease, transform 150ms ease;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+  }
+
+  .mobile-toolbar-toggle:hover,
+  .mobile-toolbar-toggle:active {
+    background: var(--surface-3);
+    border-color: var(--accent);
+  }
+
+  .mobile-toolbar-toggle[aria-expanded='true'] {
+    background: var(--accent-dim);
+    border-color: var(--accent);
+    transform: rotate(90deg);
+  }
+
+  .mobile-toolbar-toggle-icon {
+    width: 20px;
+    height: 20px;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 1.6;
+  }
+
+  /* ── Expanded panel ─────────────────────────────────────────── */
+
+  .mobile-toolbar-panel {
+    position: absolute;
+    bottom: 50px;
+    right: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    min-width: 260px;
+    max-width: calc(100vw - 12px);
+    padding: 7px 8px;
+    border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--surface-2) 94%, transparent);
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+  }
+
+  .mobile-toolbar-panel[hidden] {
+    display: none;
+  }
+
+  /* ── Button row ─────────────────────────────────────────────── */
+
+  .mobile-toolbar-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    overflow: visible;
+    justify-content: center;
+    padding-bottom: 2px;
+  }
+
+  /* Visual separator between button groups */
+  .mobile-toolbar-sep {
+    display: block;
+    width: 1px;
+    flex: 0 0 auto;
+    margin: 4px 2px;
+    background: var(--border);
+    opacity: 0.55;
+    border-radius: 1px;
+    align-self: stretch;
+  }
+
+  /* ── Arrow group: T-shaped layout ─────────────────────────── */
+
+  .mobile-arrow-group {
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .mobile-arrow-row {
+    display: flex;
+    justify-content: center;
+    gap: 4px;
+  }
+
+  /* ── Individual key button ──────────────────────────────────── */
+
+  .mobile-key-btn {
+    display: inline-grid;
+    min-width: 44px;
+    height: 40px;
+    flex: 0 0 auto;
+    place-items: center;
+    padding: 0 7px;
+    border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+    border-radius: 7px;
+    background: var(--surface-2);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  .mobile-key-btn:hover,
+  .mobile-key-btn:active {
+    border-color: var(--accent);
+    background: var(--accent-dim);
+    color: var(--accent);
+  }
+
+  /* Ctrl keys: slightly distinct tint */
+  .mobile-key-btn.mobile-key-ctrl {
+    color: var(--blue);
+    border-color: color-mix(in srgb, var(--blue) 30%, var(--border));
+  }
+
+  .mobile-key-btn.mobile-key-ctrl:hover,
+  .mobile-key-btn.mobile-key-ctrl:active {
+    border-color: var(--blue);
+    background: color-mix(in srgb, var(--blue) 10%, var(--surface-2));
+    color: var(--blue);
+  }
+
+  /* Arrow keys: slightly larger / bolder */
+  .mobile-key-btn.mobile-key-arrow {
+    font-size: 16px;
+    font-weight: 600;
+  }
+
+  /* Function keys: slightly muted */
+  .mobile-key-btn.mobile-key-fn {
+    color: var(--muted);
+  }
+
+  .mobile-key-btn.mobile-key-fn:hover,
+  .mobile-key-btn.mobile-key-fn:active {
+    color: var(--text);
+  }
+
+  /* Enter key: emphasised in accent green to draw the eye as the
+     most-frequently-used shortcut. Inherits the standard button
+     shape/size, only the colour tone differs. */
+  .mobile-key-btn.mobile-key-enter {
+    color: var(--accent-strong);
+    border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+    background: var(--accent-dim);
+  }
+
+  .mobile-key-btn.mobile-key-enter:hover,
+  .mobile-key-btn.mobile-key-enter:active {
+    border-color: var(--accent-strong);
+    background: color-mix(in srgb, var(--accent) 22%, var(--surface-2));
+    color: var(--accent-strong);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

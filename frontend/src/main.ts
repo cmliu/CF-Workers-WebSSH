@@ -1346,6 +1346,7 @@ function setState(state: ConnectionState, label?: string): void {
   ui.connect.querySelector<HTMLElement>('span:last-child')!.textContent = controlLabel;
   ui.connect.setAttribute('aria-label', controlLabel);
   ui.connect.title = currentSessionId || controlLabel;
+  updateMobileToolbarVisibility();
 }
 
 function event(message: string, category = 'session', error = false, alternate?: string): void {
@@ -2321,6 +2322,122 @@ window.addEventListener('beforeunload', () => {
   resetNetworkMetric();
   socket?.close(1000, 'Page closed');
 });
+
+// ── Mobile shortcut key toolbar ────────────────────────────────────────────
+
+/** Mapping from descriptive key names to raw terminal escape sequences. */
+const MOBILE_KEY_SEQUENCES: Readonly<Record<string, string>> = Object.freeze({
+  'ctrl-c': '\x03',
+  'ctrl-d': '\x04',
+  'esc':     '\x1b',
+  'tab':     '\x09',
+  'enter':   '\r',
+  'up':      '\x1b[A',
+  'down':    '\x1b[B',
+  'left':    '\x1b[D',
+  'right':   '\x1b[C',
+  'ctrl-z':  '\x1a',
+  'ctrl-l':  '\x0c',
+  'ctrl-r':  '\x12',
+  'ctrl-u':  '\x15',
+  'ctrl-w':  '\x17',
+  'ctrl-k':  '\x0b',
+  'ctrl-a':  '\x01',
+  'ctrl-e':  '\x05',
+  'home':    '\x1b[H',
+  'end':     '\x1b[F',
+  'pgup':    '\x1b[5~',
+  'pgdn':    '\x1b[6~',
+  'delete':  '\x1b[3~',
+});
+
+let mobileToolbarReady = false;
+
+function updateMobileToolbarVisibility(): void {
+  const toolbar = document.getElementById('mobile-toolbar');
+  if (!toolbar) return;
+  // Show toolbar only on touch devices within mobile viewport width.
+  // Aligned with the CSS media query (pointer: coarse) and (max-width: 768px).
+  const isTouchDevice = window.matchMedia('(pointer: coarse) and (max-width: 768px)').matches;
+  const shouldShow = isTouchDevice && connectionState === 'connected';
+  toolbar.hidden = !shouldShow;
+  const panel = document.getElementById('mobile-toolbar-panel');
+  const toggle = document.getElementById('mobile-toolbar-toggle');
+  if (!shouldShow) {
+    if (panel) panel.hidden = true;
+    if (toggle) {
+      toggle.setAttribute('aria-expanded', 'false');
+      toggle.setAttribute('aria-label', bilingual('打开快捷键工具栏', 'Open shortcut toolbar'));
+      toggle.title = bilingual('快捷键', 'Shortcuts');
+    }
+  } else if (toggle && panel) {
+    // Sync toggle state with current panel visibility
+    // (essential after applyLanguage() rewrites aria-label/title from data-i18n-*)
+    const isExpanded = !panel.hidden;
+    toggle.setAttribute('aria-expanded', String(isExpanded));
+    toggle.setAttribute('aria-label', isExpanded
+      ? bilingual('关闭快捷键工具栏', 'Close shortcut toolbar')
+      : bilingual('打开快捷键工具栏', 'Open shortcut toolbar'));
+    toggle.title = isExpanded
+      ? bilingual('关闭快捷键工具栏', 'Close shortcut toolbar')
+      : bilingual('快捷键', 'Shortcuts');
+  }
+}
+
+function initMobileToolbar(): void {
+  if (mobileToolbarReady) return;
+  mobileToolbarReady = true;
+
+  const toggle = document.getElementById('mobile-toolbar-toggle');
+  const panel = document.getElementById('mobile-toolbar-panel');
+  if (!toggle || !panel) return;
+
+  // Toggle expand / collapse
+  toggle.addEventListener('click', (clickEvent: Event) => {
+    clickEvent.stopPropagation();
+    const wasHidden = panel.hidden;
+    panel.hidden = !wasHidden;
+    toggle.setAttribute('aria-expanded', String(wasHidden));
+    toggle.setAttribute('aria-label', wasHidden
+      ? bilingual('关闭快捷键工具栏', 'Close shortcut toolbar')
+      : bilingual('打开快捷键工具栏', 'Open shortcut toolbar'));
+    toggle.title = wasHidden
+      ? bilingual('关闭快捷键工具栏', 'Close shortcut toolbar')
+      : bilingual('快捷键', 'Shortcuts');
+  });
+
+  // Close panel when tapping outside
+  document.addEventListener('click', (clickEvent: MouseEvent) => {
+    const toolbar = document.getElementById('mobile-toolbar');
+    if (!toolbar || toolbar.hidden) return;
+    if (panel.hidden) return;
+    const target = clickEvent.target as HTMLElement;
+    if (!toolbar.contains(target)) {
+      panel.hidden = true;
+      toggle.setAttribute('aria-expanded', 'false');
+      toggle.setAttribute('aria-label', bilingual('打开快捷键工具栏', 'Open shortcut toolbar'));
+      toggle.title = bilingual('快捷键', 'Shortcuts');
+    }
+  });
+
+  // Delegate button clicks — send the escape sequence to the terminal
+  panel.addEventListener('click', (clickEvent: Event) => {
+    const btn = (clickEvent.target as HTMLElement).closest<HTMLElement>('.mobile-key-btn');
+    if (!btn) return;
+    const key = btn.getAttribute('data-key');
+    if (!key) return;
+    const seq = MOBILE_KEY_SEQUENCES[key];
+    if (seq !== undefined && window.wssh) {
+      window.wssh.send(seq);
+    }
+    // Keep the panel open after sending a key so the user can tap
+    // multiple shortcuts without re-expanding every time.
+  });
+
+  // Initial state
+  updateMobileToolbarVisibility();
+}
+
 document.addEventListener('keydown', (keyEvent) => {
   if (keyEvent.key === 'Escape' && panelOpen && !ui.hostKeyDialog.open) {
     setPanelOpen(false);
@@ -2344,6 +2461,7 @@ async function initialize(): Promise<void> {
   ui.sessionSubtitle.textContent = bilingual('选择目标并连接', 'Choose a target and connect');
   ui.eventMessage.textContent = bilingual('Worker 运行时待命', 'Worker runtime standing by');
   initializeCompatibilityAPI();
+  initMobileToolbar();
   const shouldAutoConnect = applyURLParameters();
   requestAnimationFrame(() => {
     fitTerminal(false);
@@ -2362,4 +2480,5 @@ void initialize().catch(() => {
   setState('idle');
   setWorkspaceTab(null);
   initializeCompatibilityAPI();
+  initMobileToolbar();
 });

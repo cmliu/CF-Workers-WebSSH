@@ -342,6 +342,64 @@
                   >从连接面板建立 SSH 连接，开始加密的边缘会话。</p>
                   <button id="empty-connect" class="small-button" type="button" data-i18n-zh="配置连接" data-i18n-en="Configure connection">配置连接</button>
                 </div>
+
+                <!-- Mobile shortcut key toolbar (touch devices only) -->
+                <div id="mobile-toolbar" class="mobile-toolbar" hidden>
+                  <button
+                    id="mobile-toolbar-toggle"
+                    class="mobile-toolbar-toggle"
+                    type="button"
+                    aria-label="打开快捷键工具栏"
+                    data-i18n-aria-label-zh="打开快捷键工具栏"
+                    data-i18n-aria-label-en="Open shortcut toolbar"
+                    aria-expanded="false"
+                    title="快捷键"
+                    data-i18n-title-zh="快捷键"
+                    data-i18n-title-en="Shortcuts"
+                  >
+                    <svg class="mobile-toolbar-toggle-icon" viewBox="0 0 24 24" aria-hidden="true">
+                      <rect x="2" y="4" width="20" height="16" rx="2" />
+                      <path d="M6 8h2M10 8h2M14 8h2M6 12h6M6 16h4M16 12h2M16 16h2" />
+                    </svg>
+                  </button>
+                  <div id="mobile-toolbar-panel" class="mobile-toolbar-panel" hidden>
+                    <div class="mobile-toolbar-row">
+                      <button class="mobile-key-btn mobile-key-ctrl" type="button" data-key="ctrl-c" aria-label="Ctrl+C" data-i18n-aria-label-zh="Ctrl+C 中断" data-i18n-aria-label-en="Ctrl+C Interrupt">Ctrl + C</button>
+                      <button class="mobile-key-btn mobile-key-ctrl" type="button" data-key="ctrl-d" aria-label="Ctrl+D" data-i18n-aria-label-zh="Ctrl+D 退出" data-i18n-aria-label-en="Ctrl+D Exit">Ctrl + D</button>
+                      <button class="mobile-key-btn mobile-key-fn" type="button" data-key="esc" aria-label="Esc" data-i18n-aria-label-zh="Esc 退出模式" data-i18n-aria-label-en="Esc Exit mode">Esc</button>
+                      <button class="mobile-key-btn mobile-key-fn" type="button" data-key="tab" aria-label="Tab" data-i18n-aria-label-zh="Tab 补全" data-i18n-aria-label-en="Tab Complete">Tab</button>
+                      <button class="mobile-key-btn mobile-key-enter" type="button" data-key="enter" aria-label="Enter" data-i18n-aria-label-zh="Enter 提交命令" data-i18n-aria-label-en="Enter Submit">Enter</button>
+                      <span class="mobile-toolbar-sep" aria-hidden="true"></span>
+                      <div class="mobile-arrow-group">
+                        <div class="mobile-arrow-row">
+                          <button class="mobile-key-btn mobile-key-arrow" type="button" data-key="up" aria-label="上方向键" data-i18n-aria-label-zh="上方向键" data-i18n-aria-label-en="Up arrow">↑</button>
+                        </div>
+                        <div class="mobile-arrow-row">
+                          <button class="mobile-key-btn mobile-key-arrow" type="button" data-key="left" aria-label="左方向键" data-i18n-aria-label-zh="左方向键" data-i18n-aria-label-en="Left arrow">←</button>
+                          <button class="mobile-key-btn mobile-key-arrow" type="button" data-key="down" aria-label="下方向键" data-i18n-aria-label-zh="下方向键" data-i18n-aria-label-en="Down arrow">↓</button>
+                          <button class="mobile-key-btn mobile-key-arrow" type="button" data-key="right" aria-label="右方向键" data-i18n-aria-label-zh="右方向键" data-i18n-aria-label-en="Right arrow">→</button>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="mobile-toolbar-row">
+                      <button class="mobile-key-btn mobile-key-ctrl" type="button" data-key="ctrl-z" aria-label="Ctrl+Z" data-i18n-aria-label-zh="Ctrl+Z 挂起" data-i18n-aria-label-en="Ctrl+Z Suspend">Ctrl + Z</button>
+                      <button class="mobile-key-btn mobile-key-ctrl" type="button" data-key="ctrl-l" aria-label="Ctrl+L" data-i18n-aria-label-zh="Ctrl+L 清屏" data-i18n-aria-label-en="Ctrl+L Clear">Ctrl + L</button>
+                      <button class="mobile-key-btn mobile-key-ctrl" type="button" data-key="ctrl-r" aria-label="Ctrl+R" data-i18n-aria-label-zh="Ctrl+R 反向历史搜索" data-i18n-aria-label-en="Ctrl+R Reverse history search">Ctrl + R</button>
+                      <button class="mobile-key-btn mobile-key-ctrl" type="button" data-key="ctrl-u" aria-label="Ctrl+U" data-i18n-aria-label-zh="Ctrl+U 删行" data-i18n-aria-label-en="Ctrl+U Kill line">Ctrl + U</button>
+                      <button class="mobile-key-btn mobile-key-ctrl" type="button" data-key="ctrl-w" aria-label="Ctrl+W" data-i18n-aria-label-zh="Ctrl+W 删词" data-i18n-aria-label-en="Ctrl+W Kill word">Ctrl + W</button>
+                      <button class="mobile-key-btn mobile-key-ctrl" type="button" data-key="ctrl-k" aria-label="Ctrl+K" data-i18n-aria-label-zh="Ctrl+K 删至行尾" data-i18n-aria-label-en="Ctrl+K Kill to end">Ctrl + K</button>
+                      <button class="mobile-key-btn mobile-key-ctrl" type="button" data-key="ctrl-a" aria-label="Ctrl+A" data-i18n-aria-label-zh="Ctrl+A 行首" data-i18n-aria-label-en="Ctrl+A Line start">Ctrl + A</button>
+                      <button class="mobile-key-btn mobile-key-ctrl" type="button" data-key="ctrl-e" aria-label="Ctrl+E" data-i18n-aria-label-zh="Ctrl+E 行尾" data-i18n-aria-label-en="Ctrl+E Line end">Ctrl + E</button>
+                    </div>
+                    <div class="mobile-toolbar-row">
+                      <button class="mobile-key-btn mobile-key-fn" type="button" data-key="home" aria-label="Home Line start" data-i18n-aria-label-zh="Home 行首" data-i18n-aria-label-en="Home Line start">Home</button>
+                      <button class="mobile-key-btn mobile-key-fn" type="button" data-key="end" aria-label="End Line end" data-i18n-aria-label-zh="End 行尾" data-i18n-aria-label-en="End Line end">End</button>
+                      <button class="mobile-key-btn mobile-key-fn" type="button" data-key="pgup" aria-label="PgUp" data-i18n-aria-label-zh="PgUp 上翻页" data-i18n-aria-label-en="Page Up">PgUp</button>
+                      <button class="mobile-key-btn mobile-key-fn" type="button" data-key="pgdn" aria-label="PgDn" data-i18n-aria-label-zh="PgDn 下翻页" data-i18n-aria-label-en="Page Down">PgDn</button>
+                      <button class="mobile-key-btn mobile-key-fn" type="button" data-key="delete" aria-label="Delete" data-i18n-aria-label-zh="Delete 删除光标处" data-i18n-aria-label-en="Delete Forward delete">Delete</button>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
 
