@@ -2356,10 +2356,9 @@ let mobileToolbarReady = false;
 function updateMobileToolbarVisibility(): void {
   const toolbar = document.getElementById('mobile-toolbar');
   if (!toolbar) return;
-  // CSS media query already gates visibility via display:none, but we
-  // add a JS check for pointer:coarse as a defence against browsers
-  // that report coarse for mice/stylus (uncommon, but safe).
-  const isTouchDevice = window.matchMedia('(pointer: coarse)').matches;
+  // Show toolbar only on touch devices within mobile viewport width.
+  // Aligned with the CSS media query (pointer: coarse) and (max-width: 768px).
+  const isTouchDevice = window.matchMedia('(pointer: coarse) and (max-width: 768px)').matches;
   const shouldShow = isTouchDevice && connectionState === 'connected';
   toolbar.hidden = !shouldShow;
   const panel = document.getElementById('mobile-toolbar-panel');
