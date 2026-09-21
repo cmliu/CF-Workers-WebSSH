@@ -424,6 +424,22 @@
                     <span class="button-label" data-i18n-zh="文件管理" data-i18n-en="Files">文件管理</span>
                   </button>
                   <button
+                    id="network-detail-tab"
+                    class="dock-tab"
+                    type="button"
+                    role="tab"
+                    aria-selected="false"
+                    aria-controls="network-detail-panel"
+                    aria-expanded="false"
+                    tabindex="-1"
+                    aria-label="网络详情"
+                    data-i18n-aria-label-zh="网络详情"
+                    data-i18n-aria-label-en="Network"
+                  >
+                    <svg class="dock-tab-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.8a9.2 9.2 0 1 0 0 18.4 9.2 9.2 0 0 0 0-18.4Z" /><path d="M2.8 12h18.4M12 2.8c2.6 2.6 4 5.8 4 9.2s-1.4 6.6-4 9.2c-2.6-2.6-4-5.8-4-9.2s1.4-6.6 4-9.2Z" /></svg>
+                    <span class="button-label" data-i18n-zh="网络详情" data-i18n-en="Network">网络详情</span>
+                  </button>
+                  <button
                     id="process-manager-tab"
                     class="dock-tab"
                     type="button"
@@ -525,6 +541,32 @@
                       aria-label="取消文件传输"
                     >取消</button>
                   </div>
+                </div>
+              </section>
+              <section id="network-detail-panel" class="network-manager" role="tabpanel" aria-labelledby="network-detail-tab" tabindex="0" hidden>
+                <p class="network-note" data-i18n-zh="上传/下载为 socket 生命周期累计值（仅 TCP），socket 关闭会回落；非 root 主机不显示。" data-i18n-en="Upload/download are socket-lifetime cumulative bytes (TCP only) and can drop when a socket closes; hidden for non-root hosts.">上传/下载为 socket 生命周期累计值（仅 TCP），socket 关闭会回落；非 root 主机不显示。</p>
+                <div class="network-table-wrap">
+                  <table class="network-table" aria-describedby="network-manager-status">
+                    <thead>
+                      <tr>
+                        <th scope="col" aria-sort="none"><button class="network-sort" type="button" data-network-sort="pid" data-i18n-zh="PID" data-i18n-en="PID">PID</button></th>
+                        <th scope="col" aria-sort="none"><button class="network-sort" type="button" data-network-sort="name" data-i18n-zh="名称" data-i18n-en="Name">名称</button></th>
+                        <th scope="col" aria-sort="none"><button class="network-sort" type="button" data-network-sort="listen_ip" data-i18n-zh="监听IP" data-i18n-en="Listen IP">监听IP</button></th>
+                        <th scope="col" aria-sort="none"><button class="network-sort" type="button" data-network-sort="listen_port" data-i18n-zh="端口" data-i18n-en="Port">端口</button></th>
+                        <th scope="col" aria-sort="none"><button class="network-sort" type="button" data-network-sort="remote_ip_count" data-i18n-zh="IP数" data-i18n-en="IPs">IP数</button></th>
+                        <th scope="col" aria-sort="descending"><button class="network-sort" type="button" data-network-sort="connection_count" data-i18n-zh="连接数" data-i18n-en="Conns">连接数</button></th>
+                        <th scope="col" aria-sort="none"><button class="network-sort" type="button" data-network-sort="bytes_sent" data-i18n-zh="上传" data-i18n-en="Upload">上传</button></th>
+                        <th scope="col" aria-sort="none"><button class="network-sort" type="button" data-network-sort="bytes_recv" data-i18n-zh="下载" data-i18n-en="Download">下载</button></th>
+                      </tr>
+                    </thead>
+                    <tbody id="network-table-body"></tbody>
+                  </table>
+                  <div id="network-manager-empty" class="network-manager-state" hidden data-i18n-zh="没有可显示的网络连接" data-i18n-en="No network connections to display">没有可显示的网络连接</div>
+                  <div id="network-manager-error" class="network-manager-state error" role="alert" hidden></div>
+                </div>
+                <div class="network-statusbar">
+                  <span id="network-manager-status" role="status" aria-live="polite" data-i18n-zh="连接 SSH 后即可查看实时网络连接" data-i18n-en="Connect to SSH to view live network connections">连接 SSH 后即可查看实时网络连接</span>
+                  <span><span data-i18n-zh="主机" data-i18n-en="Host">主机</span> <strong id="network-host">--</strong> · <span data-i18n-zh="最后更新" data-i18n-en="Last update">最后更新</span> <strong id="network-updated">--</strong></span>
                 </div>
               </section>
               <section id="process-manager-panel" class="process-manager" role="tabpanel" aria-labelledby="process-manager-tab" tabindex="0" hidden>

@@ -9,6 +9,7 @@ import { classifyHostKey, SSH_FINGERPRINT_RE, type HostKeyPrompt } from './host-
 import { FileManager, collectFileManagerElements } from './file-manager';
 import { FileTree } from './file-tree';
 import { ProcessManager, collectProcessManagerElements, type NetworkSample } from './process-manager';
+import { NetworkManager, collectNetworkManagerElements } from './network-manager';
 import { resetTerminalForConnection } from './terminal-session';
 import { WebSocketReconnectManager } from './ws-reconnect';
 import type { ReconnectLogEntry } from './ws-reconnect';
@@ -191,6 +192,7 @@ const EVENT_LABELS: Record<string, Translation> = {
   debug: ['调试', 'debug'],
   'host-key': ['主机密钥', 'host key'],
   sftp: ['文件管理', 'files'],
+  network: ['网络', 'network'],
 };
 
 const SERVER_EVENT_MESSAGES: Record<string, Translation> = {
@@ -304,6 +306,8 @@ const ui = {
   fileTree: element<HTMLElement>('file-tree'),
   processManagerTab: element<HTMLButtonElement>('process-manager-tab'),
   processManagerPanel: element<HTMLElement>('process-manager-panel'),
+  networkDetailTab: element<HTMLButtonElement>('network-detail-tab'),
+  networkDetailPanel: element<HTMLElement>('network-detail-panel'),
   eventToggle: element<HTMLButtonElement>('event-toggle'),
   eventLog: element<HTMLElement>('event-log'),
   toastRegion: element<HTMLElement>('toast-region'),
@@ -373,6 +377,7 @@ function applyLanguage(language: Language, persist = false): void {
   if (fileManager) fileManager.setLanguage();
   if (fileTree) fileTree.setLanguage();
   if (processManager) processManager.setLanguage();
+  if (networkManager) networkManager.setLanguage();
 
   if (persist) {
     try { localStorage.setItem(LANGUAGE_STORAGE_KEY, language); } catch { /* Language still applies for this page. */ }
@@ -413,6 +418,7 @@ let panelOpen = false;
 let fileManager: FileManager;
 let fileTree: FileTree;
 let processManager: ProcessManager;
+let networkManager: NetworkManager;
 let sshReconnectManager: WebSocketReconnectManager | null = null;
 let reconnectParams: {
   host: string; port: number; username: string; authMethod: string;
@@ -682,6 +688,13 @@ processManager = new ProcessManager({
   onReconnect: (zh, en) => event(bilingual(zh, en), 'process'),
   onToast: (zh, en, kind) => toast(bilingual(zh, en), kind),
   onNetworkSample: (sample, timestamp) => updateNetworkMetric(sample, timestamp),
+});
+networkManager = new NetworkManager({
+  elements: collectNetworkManagerElements(),
+  getLanguage: () => currentLanguage,
+  onError: (message) => event(message, 'network', true),
+  onReconnect: (zh, en) => event(bilingual(zh, en), 'network'),
+  onToast: (zh, en, kind) => toast(bilingual(zh, en), kind),
 });
 
 function terminalTheme(): Record<string, string> {
@@ -1483,29 +1496,34 @@ function sendHostKeyDecision(accept: boolean): void {
     : bilingual('主机密钥已拒绝。', 'Host key rejected.'), 'host-key', !accept);
 }
 
-type WorkspaceTab = 'files' | 'processes' | 'log';
+type WorkspaceTab = 'files' | 'network' | 'processes' | 'log';
 let activeWorkspaceTab: WorkspaceTab | null = null;
 
 function setWorkspaceTab(tab: WorkspaceTab | null, focus = false, rovingTab = tab ?? activeWorkspaceTab ?? 'files'): void {
   const filesActive = tab === 'files';
+  const networkActive = tab === 'network';
   const processesActive = tab === 'processes';
   const logActive = tab === 'log';
   activeWorkspaceTab = tab;
   ui.terminalCard.classList.toggle('workspace-panel-open', tab !== null);
   ui.fileManagerPanel.hidden = !filesActive;
+  ui.networkDetailPanel.hidden = !networkActive;
   ui.processManagerPanel.hidden = !processesActive;
   ui.eventLog.hidden = !logActive;
   ui.fileManagerTab.setAttribute('aria-selected', String(filesActive));
+  ui.networkDetailTab.setAttribute('aria-selected', String(networkActive));
   ui.processManagerTab.setAttribute('aria-selected', String(processesActive));
   ui.eventToggle.setAttribute('aria-selected', String(logActive));
   ui.fileManagerTab.setAttribute('aria-expanded', String(filesActive));
+  ui.networkDetailTab.setAttribute('aria-expanded', String(networkActive));
   ui.processManagerTab.setAttribute('aria-expanded', String(processesActive));
   ui.eventToggle.setAttribute('aria-expanded', String(logActive));
   ui.fileManagerTab.tabIndex = rovingTab === 'files' ? 0 : -1;
+  ui.networkDetailTab.tabIndex = rovingTab === 'network' ? 0 : -1;
   ui.processManagerTab.tabIndex = rovingTab === 'processes' ? 0 : -1;
   ui.eventToggle.tabIndex = rovingTab === 'log' ? 0 : -1;
   if (logActive) requestAnimationFrame(() => { ui.eventLog.scrollTop = ui.eventLog.scrollHeight; });
-  if (focus) ({ files: ui.fileManagerTab, processes: ui.processManagerTab, log: ui.eventToggle })[rovingTab].focus();
+  if (focus) ({ files: ui.fileManagerTab, network: ui.networkDetailTab, processes: ui.processManagerTab, log: ui.eventToggle })[rovingTab].focus();
   requestAnimationFrame(() => fitTerminal(true));
 }
 
@@ -1516,8 +1534,8 @@ function toggleWorkspaceTab(tab: WorkspaceTab): void {
 function handleWorkspaceTabKey(event: KeyboardEvent): void {
   if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
   event.preventDefault();
-  const tabs: WorkspaceTab[] = ['files', 'processes', 'log'];
-  const current = tabs.findIndex((tab) => ({ files: ui.fileManagerTab, processes: ui.processManagerTab, log: ui.eventToggle })[tab] === event.currentTarget);
+  const tabs: WorkspaceTab[] = ['files', 'network', 'processes', 'log'];
+  const current = tabs.findIndex((tab) => ({ files: ui.fileManagerTab, network: ui.networkDetailTab, processes: ui.processManagerTab, log: ui.eventToggle })[tab] === event.currentTarget);
   const next = event.key === 'Home' ? 0
     : event.key === 'End' ? tabs.length - 1
       : (current + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
@@ -1589,6 +1607,20 @@ function handleServerMessage(message: ServerMessage): void {
       return;
     }
     event(bilingual('进程监控通道已可用。', 'Process monitor channel is available.'), 'process');
+    return;
+  }
+  if (type === 'network_attach') {
+    if (typeof message.url !== 'string' || !message.url.startsWith('/api/network?')) {
+      event(bilingual('收到无效的网络监控连接信息。', 'Received invalid network-monitor connection details.'), 'protocol', true);
+      return;
+    }
+    try {
+      networkManager.attach(message.url);
+    } catch {
+      event(bilingual('无法打开网络监控连接。', 'Could not open the network-monitor connection.'), 'network', true);
+      return;
+    }
+    event(bilingual('网络监控通道已可用。', 'Network monitor channel is available.'), 'network');
     return;
   }
   if (type === 'host_key') {
@@ -1705,6 +1737,7 @@ function failActiveConnection(activeSocket: WebSocket | null, closeReason: strin
   fileManager.reset();
   fileTree?.setReady(false);
   processManager.reset();
+  networkManager.reset();
   resetNetworkMetric();
   clearHostKeyPrompt();
   invalidateHistoryPasswordLoad();
@@ -1809,6 +1842,7 @@ function handleSshReconnectLog(entry: ReconnectLogEntry): void {
     fileManager.reset();
     fileTree?.setReady(false);
     processManager.reset();
+    networkManager.reset();
   } else if (entry.event === 'reconnect_attempt') {
     updateConnectionStatus(localized(
       `正在重连 SSH（${entry.attempt}/${entry.maxAttempts}）…`,
@@ -1972,6 +2006,7 @@ async function connect(): Promise<void> {
       fileManager.reset();
       fileTree?.setReady(false);
       processManager.reset();
+      networkManager.reset();
       resetNetworkMetric();
       clearHostKeyPrompt();
       invalidateHistoryPasswordLoad();
@@ -2020,6 +2055,7 @@ function disconnect(reason = bilingual('已由用户断开连接', 'Disconnected
   fileManager.reset();
   fileTree?.setReady(false);
   processManager.reset();
+  networkManager.reset();
   resetNetworkMetric();
   clearHostKeyPrompt();
   invalidateHistoryPasswordLoad();
@@ -2278,9 +2314,11 @@ ui.fullscreenTerminal.addEventListener('click', async () => {
 });
 document.addEventListener('fullscreenchange', () => fitTerminal(true));
 ui.fileManagerTab.addEventListener('click', () => toggleWorkspaceTab('files'));
+ui.networkDetailTab.addEventListener('click', () => toggleWorkspaceTab('network'));
 ui.processManagerTab.addEventListener('click', () => toggleWorkspaceTab('processes'));
 ui.eventToggle.addEventListener('click', () => toggleWorkspaceTab('log'));
 ui.fileManagerTab.addEventListener('keydown', handleWorkspaceTabKey);
+ui.networkDetailTab.addEventListener('keydown', handleWorkspaceTabKey);
 ui.processManagerTab.addEventListener('keydown', handleWorkspaceTabKey);
 ui.eventToggle.addEventListener('keydown', handleWorkspaceTabKey);
 ui.languageToggle.addEventListener('click', () => {
@@ -2319,6 +2357,7 @@ window.addEventListener('beforeunload', () => {
   fileTree?.setReady(false);
   fileTree?.destroy();
   processManager.reset();
+  networkManager.reset();
   resetNetworkMetric();
   socket?.close(1000, 'Page closed');
 });
