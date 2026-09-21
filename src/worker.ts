@@ -1,8 +1,21 @@
 import type { Env } from './types';
 import { SSHSessionDO } from './backend/durable-object';
+import { GeoService, classifyIp } from './backend/geo-service';
 import { corsPreflightResponse, corsResponse, httpsRedirect, isProductionHttp, jsonError, secureResponse } from './http-security';
 
 export { SSHSessionDO };
+
+// Remote-IP geolocation is served straight from the Worker (no Durable Object
+// round-trip). The cache lives at module scope, so it is per-isolate and resets
+// on cold start — acceptable for a best-effort address lookup.
+const geoService = new GeoService();
+
+async function geoLookup(request: Request): Promise<Response> {
+  const ip = new URL(request.url).searchParams.get('ip') ?? '';
+  if (classifyIp(ip) === 'invalid') return jsonError('Invalid or missing ip parameter', 400);
+  const result = await geoService.lookup(ip);
+  return secureResponse(Response.json(result, { headers: { 'Cache-Control': 'no-store' } }));
+}
 
 function clientAddress(request: Request): string {
   const value = request.headers.get('CF-Connecting-IP') ?? 'local';
@@ -184,6 +197,10 @@ export default {
       if (url.pathname === '/api/network') {
         if (request.method !== 'GET') return corsResponse(jsonError('Method not allowed', 405));
         return corsResponse(await networkUpgrade(request, env));
+      }
+      if (url.pathname === '/api/geo') {
+        if (request.method !== 'GET') return corsResponse(jsonError('Method not allowed', 405));
+        return corsResponse(await geoLookup(request));
       }
       if (isApiRequest) return corsResponse(jsonError('Not found', 404));
       if (!env.ASSETS) return jsonError('Static assets binding is not configured', 503);

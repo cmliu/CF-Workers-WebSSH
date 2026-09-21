@@ -50,6 +50,7 @@ import { parseTopSnapshot } from './top-parser';
 import { retainTrailingMarkerPrefix } from './process-framing';
 import {
   NETWORK_AGGREGATE_MARKER,
+  NETWORK_BYTES_MARKER,
   NETWORK_CONNECTIONS_MARKER,
   parseNetworkSnapshot,
 } from './network-parser';
@@ -132,12 +133,27 @@ const NETWORK_MAX_BUFFER_BYTES = 4 * 1024 * 1024;
 const PROCESS_MONITOR_COMMAND = "LC_ALL=C LANG=C sh -c 'os=$(uname -s 2>/dev/null || echo Linux); export COLUMNS=4096; while :; do printf \"\\137\\137CF_WEBSSH_TOP_SNAPSHOT\\137\\137\\n\"; case \"$os\" in FreeBSD) top -b -a -d 1 2>/dev/null || exit 127;; Darwin) top -l 1 -c -n 0 -s 0 2>/dev/null || exit 127;; *) top -b -c -n 1 -w 0 2>/dev/null || top -b -c -n 1 2>/dev/null || top -b -n 1 2>/dev/null || exit 127;; esac; printf \"\\137\\137CF_WEBSSH_NETWORK\\137\\137\\n\"; NETN=0; if [ -d /sys/class/net ]; then for NDIR in /sys/class/net/*; do [ -d \"$NDIR\" ] || continue; NAME=${NDIR##*/}; case \"$NAME\" in lo|docker*|veth*|br-*|tun*|tailscale*) continue;; esac; RX=$(cat \"$NDIR/statistics/rx_bytes\" 2>/dev/null) || continue; TX=$(cat \"$NDIR/statistics/tx_bytes\" 2>/dev/null) || continue; case \"$RX$TX\" in *[!0-9]*) continue;; esac; NETN=$((NETN+1)); [ \"$NETN\" -ge 32 ] && break; printf \"%s\\t%s\\t%s\\n\" \"$NAME\" \"$RX\" \"$TX\"; done; elif command -v netstat >/dev/null 2>&1; then netstat -ibn 2>/dev/null | grep -v \"^lo\" | grep \"<Link#[0-9]>\" | head -n 32 | awk -v OFS=\"\\t\" \"{print \\$1, \\$7, \\$10}\"; fi; sleep 2; done'";
 // Network monitor: Linux-only (`ss`) collector. It emits a per-PID aggregate table
 // (listening socket, connection + remote-IP counts, and socket-lifetime byte totals taken
-// from `ss -tinp` tcp_info), an (empty in P0) connection-detail block, the NIC byte totals
-// and a one-shot error line. Non-root hosts emit the error instead of rows; hosts without
-// `ss` emit `no supported tool (ss) available`. The command is single-line, POSIX/dash and
+// from `ss -tinp` tcp_info), a per-connection detail block (one row per non-LISTEN TCP
+// socket: PID, PROTO=tcp, local addr/port, remote addr/port, state and that socket's own
+// bytes_acked/bytes_received), the NIC byte totals and a one-shot error line. Non-root hosts
+// emit the error instead of rows; hosts without `ss` emit `no supported tool (ss) available`.
+//
+// The AGGREGATE awk consumes three `ss` sections split by the `@@A@@` / `@@B@@` markers:
+// (0) `ss -tlnpn` TCP listeners, (1) `ss -tunpn` UDP sockets, (2) `ss -tinp` TCP sockets.
+// Sections 0-1 (`mode<2`) only record each PID's LISTENING socket — a UDP `UNCONN` row is
+// treated as a listener too — while section 2 (`mode==2`) is the SINGLE source of both the
+// connection / remote-IP counts AND the byte totals. Because the left-hand count and the
+// right-hand detail table now derive from the same `ss -tinp` pass, a UDP-only socket (e.g.
+// WireGuard/WARP) can no longer inflate the left count without a matching right-side row.
+//
+// The detail (CONNECTIONS) block runs its own `ss -tinp` pass piped through a small awk
+// that buffers one socket (its `users:(...)` line) until the following tcp_info continuation
+// line carrying the byte counters, then prints the row — LISTEN sockets are dropped because
+// their remote port is a wildcard (`*`), not digits. The pass is capped with `head -n 512`
+// so a busy host cannot bloat the channel buffer. The command is single-line, POSIX/dash and
 // mawk compatible, contains exactly two single quotes (the `sh -c` wrapper) and is < 4096
 // bytes for buildExecRequest().
-const NETWORK_MONITOR_COMMAND = "LC_ALL=C sh -c 'command -v ss >/dev/null 2>&1 || printf \"__CF_WEBSSH_NETWORK_ERROR__\\tno supported tool (ss) available\\n\"; ERRDONE=0; SEEN=0; while :; do printf \"__CF_WEBSSH_NETWORK_AGGREGATE__\\n\"; printf \"PID\\tNAME\\tUSER\\tLISTEN_IP\\tLISTEN_PORT\\tREMOTE_IP_COUNT\\tCONNECTION_COUNT\\tBYTES_SENT\\tBYTES_RECV\\n\"; OUT=$( { ss -tlnpn 2>/dev/null; ss -tunpn 2>/dev/null; printf \"@@B@@\\n\"; ss -tinp 2>/dev/null; } | awk \"BEGIN{Q=sprintf(\\\"%c\\\",34);mode=0} \\$0==\\\"@@B@@\\\"{mode=1;next} mode==0{s=\\$0;if(match(s,/users:[(]/)){nm=\\\"\\\";pid=\\\"\\\";t=s;sub(/.*users:[(][(]/,\\\"\\\",t);q=index(t,Q);if(q>0){u=substr(t,q+1);w=index(u,Q);if(w>0)nm=substr(u,1,w-1)};pp=index(s,\\\"pid=\\\");if(pp>0){d=substr(s,pp+4);if(match(d,/^[0-9]+/))pid=substr(d,1,RLENGTH)};if(pid!=\\\"\\\"){la=\\$4;lp=la;sub(/.*:/,\\\"\\\",lp);if(lp!~/^[0-9]+\\$/){next};if(\\$1==\\\"LISTEN\\\"){lip=la;sub(/:[0-9]+\\$/,\\\"\\\",lip);listen_ip[pid]=lip;listen_port[pid]=lp+0;have[pid]=1;name[pid]=nm;next};ra=\\$5;rp=ra;sub(/.*:/,\\\"\\\",rp);if(rp!~/^[0-9]+\\$/){next};rip=ra;sub(/:[0-9]+\\$/,\\\"\\\",rip);seen[pid \\\"|\\\" rip]=1;count[pid]++;have[pid]=1;name[pid]=nm}};next} mode==1{if(match(\\$0,/users:[(]/)){nm=\\\"\\\";pid=\\\"\\\";t=\\$0;sub(/.*users:[(][(]/,\\\"\\\",t);q=index(t,Q);if(q>0){u=substr(t,q+1);w=index(u,Q);if(w>0)nm=substr(u,1,w-1)};pp=index(\\$0,\\\"pid=\\\");if(pp>0){d=substr(\\$0,pp+4);if(match(d,/^[0-9]+/))pid=substr(d,1,RLENGTH)};if(pid!=\\\"\\\"){cur=pid;have[pid]=1;if(nm!=\\\"\\\")name[pid]=nm};next}if(cur==\\\"\\\"){next}for(i=1;i<=NF;i++){if(index(\\$i,\\\"bytes_acked:\\\")==1)sent[cur]+=substr(\\$i,13);if(index(\\$i,\\\"bytes_received:\\\")==1)recv[cur]+=substr(\\$i,16)}next} END{for(p in have){n=0;for(k in seen){split(k,a,\\\"|\\\");if(a[1]==p)n++};printf \\\"%s\\\\t%s\\\\t%s\\\\t%s\\\\t%d\\\\t%d\\\\t%d\\\\t%d\\\\t%d\\\\n\\\",p,name[p],\\\"\\\",listen_ip[p],listen_port[p]+0,n,count[p]+0,sent[p]+0,recv[p]+0}}\" ); printf \"%s\\n\" \"$OUT\"; if [ -z \"$OUT\" ]; then if [ \"$SEEN\" = 0 ] && [ \"$ERRDONE\" = 0 ]; then printf \"__CF_WEBSSH_NETWORK_ERROR__\\tss -p needs root to show processes\\n\"; ERRDONE=1; fi; else SEEN=1; fi; printf \"__CF_WEBSSH_NETWORK_CONNECTIONS__\\n\"; printf \"PID\\tPROTO\\tLOCAL_ADDR\\tLOCAL_PORT\\tREMOTE_ADDR\\tREMOTE_PORT\\tSTATE\\tBYTES_SENT\\tBYTES_RECV\\n\"; TX=0; RX=0; if [ -r /proc/net/dev ]; then while IFS=: read -r IFACE REST; do set -- $IFACE; IFACE=$1; case \"$IFACE\" in *[!a-zA-Z0-9_]*) continue;; esac; case \"$IFACE\" in lo|docker*|veth*|br-*|tun*|tailscale*) continue;; esac; V=$(printf \"%s\" \"$REST\" | awk \"{print \\$1}\"); case \"$V\" in \"\"|*[!0-9]*) continue;; esac; RX=$((RX + V)); V=$(printf \"%s\" \"$REST\" | awk \"{print \\$9}\"); case \"$V\" in \"\"|*[!0-9]*) continue;; esac; TX=$((TX + V)); done < /proc/net/dev; fi; printf \"__CF_WEBSSH_NETWORK_BYTES__\\t%d\\t%d\\n\" \"$TX\" \"$RX\"; sleep 3; done'";;
+const NETWORK_MONITOR_COMMAND = "LC_ALL=C sh -c 'command -v ss >/dev/null 2>&1 || printf \"__CF_WEBSSH_NETWORK_ERROR__\\tno supported tool (ss) available\\n\"; ERRDONE=0; SEEN=0; while :; do printf \"__CF_WEBSSH_NETWORK_AGGREGATE__\\n\"; printf \"PID\\tNAME\\tUSER\\tLISTEN_IP\\tPROTO\\tLISTEN_PORT\\tREMOTE_IP_COUNT\\tCONNECTION_COUNT\\tBYTES_SENT\\tBYTES_RECV\\n\"; OUT=$( { ss -tlnpn 2>/dev/null; printf \"@@A@@\\n\"; ss -tunpn 2>/dev/null; printf \"@@B@@\\n\"; ss -tinp 2>/dev/null; } | awk \"BEGIN{Q=sprintf(\\\"%c\\\",34);mode=0} \\$0==\\\"@@A@@\\\"{mode=1;next} \\$0==\\\"@@B@@\\\"{mode=2;next} mode<2{s=\\$0;if(match(s,/users:[(]/)){nm=\\\"\\\";pid=\\\"\\\";t=s;sub(/.*users:[(][(]/,\\\"\\\",t);q=index(t,Q);if(q>0){u=substr(t,q+1);w=index(u,Q);if(w>0)nm=substr(u,1,w-1)};pp=index(s,\\\"pid=\\\");if(pp>0){d=substr(s,pp+4);if(match(d,/^[0-9]+/))pid=substr(d,1,RLENGTH)};if(pid!=\\\"\\\"&&(\\$1==\\\"LISTEN\\\"||\\$1==\\\"UNCONN\\\")){pr=\\\"tcp\\\";if(mode==1)pr=\\\"udp\\\";if(proto[pid]==\\\"\\\")proto[pid]=pr;else if(proto[pid]!=pr)proto[pid]=\\\"tcp/udp\\\";la=\\$4;lp=la;sub(/.*:/,\\\"\\\",lp);if(lp~/^[0-9]+\\$/){lip=la;sub(/:[0-9]+\\$/,\\\"\\\",lip);listen_ip[pid]=lip;listen_port[pid]=lp+0;have[pid]=1;name[pid]=nm}}};next} mode==2{if(match(\\$0,/users:[(]/)){nm=\\\"\\\";pid=\\\"\\\";t=\\$0;sub(/.*users:[(][(]/,\\\"\\\",t);q=index(t,Q);if(q>0){u=substr(t,q+1);w=index(u,Q);if(w>0)nm=substr(u,1,w-1)};pp=index(\\$0,\\\"pid=\\\");if(pp>0){d=substr(\\$0,pp+4);if(match(d,/^[0-9]+/))pid=substr(d,1,RLENGTH)};if(pid!=\\\"\\\"){cur=pid;have[pid]=1;if(nm!=\\\"\\\")name[pid]=nm;if(proto[pid]==\\\"\\\")proto[pid]=\\\"tcp\\\";ra=\\$5;rp=ra;sub(/.*:/,\\\"\\\",rp);if(rp~/^[0-9]+\\$/){rip=ra;sub(/:[0-9]+\\$/,\\\"\\\",rip);seen[pid \\\"|\\\" rip]=1;count[pid]++}}else{cur=\\\"\\\"};next}if(cur==\\\"\\\"){next}for(i=1;i<=NF;i++){if(index(\\$i,\\\"bytes_acked:\\\")==1)sent[cur]+=substr(\\$i,13);if(index(\\$i,\\\"bytes_received:\\\")==1)recv[cur]+=substr(\\$i,16)}next} END{for(p in have){n=0;for(k in seen){split(k,a,\\\"|\\\");if(a[1]==p)n++};printf \\\"%s\\\\t%s\\\\t%s\\\\t%s\\\\t%s\\\\t%d\\\\t%d\\\\t%d\\\\t%d\\\\t%d\\\\n\\\",p,name[p],\\\"\\\",listen_ip[p],proto[p],listen_port[p]+0,n,count[p]+0,sent[p]+0,recv[p]+0}}\" ); printf \"%s\\n\" \"$OUT\"; if [ -z \"$OUT\" ]; then if [ \"$SEEN\" = 0 ] && [ \"$ERRDONE\" = 0 ]; then printf \"__CF_WEBSSH_NETWORK_ERROR__\\tss -p needs root to show processes\\n\"; ERRDONE=1; fi; else SEEN=1; fi; printf \"__CF_WEBSSH_NETWORK_CONNECTIONS__\\n\"; printf \"PID\\tPROTO\\tLOCAL_ADDR\\tLOCAL_PORT\\tREMOTE_ADDR\\tREMOTE_PORT\\tSTATE\\tBYTES_SENT\\tBYTES_RECV\\n\"; ss -tinp 2>/dev/null | awk \"function P(){if(cur!=\\\"\\\")print cur\\\"\\\\ttcp\\\\t\\\"lip\\\"\\\\t\\\"lp\\\"\\\\t\\\"rip\\\"\\\\t\\\"rp\\\"\\\\t\\\"st\\\"\\\\t\\\"ac\\\"\\\\t\\\"rc} BEGIN{cur=\\\"\\\"} {if(match(\\$0,/users:[(]/)){P();pid=\\\"\\\";pp=index(\\$0,\\\"pid=\\\");if(pp>0){d=substr(\\$0,pp+4);if(match(d,/^[0-9]+/))pid=substr(d,1,RLENGTH)};if(pid==\\\"\\\"){cur=\\\"\\\";next};st=\\$1;la=\\$4;ra=\\$5;lp=la;sub(/.*:/,\\\"\\\",lp);if(lp!~/^[0-9]+\\$/){cur=\\\"\\\";next};rp=ra;sub(/.*:/,\\\"\\\",rp);if(rp!~/^[0-9]+\\$/){cur=\\\"\\\";next};lip=la;sub(/:[0-9]+\\$/,\\\"\\\",lip);rip=ra;sub(/:[0-9]+\\$/,\\\"\\\",rip);cur=pid;ac=0;rc=0;next};if(cur!=\\\"\\\"){for(i=1;i<=NF;i++){if(index(\\$i,\\\"bytes_acked:\\\")==1)ac+=substr(\\$i,13);if(index(\\$i,\\\"bytes_received:\\\")==1)rc+=substr(\\$i,16)}}} END{P()}\" | head -n 512; TX=0; RX=0; if [ -r /proc/net/dev ]; then while IFS=: read -r IFACE REST; do set -- $IFACE; IFACE=$1; case \"$IFACE\" in *[!a-zA-Z0-9_]*) continue;; esac; case \"$IFACE\" in lo|docker*|veth*|br-*|tun*|tailscale*) continue;; esac; V=$(printf \"%s\" \"$REST\" | awk \"{print \\$1}\"); case \"$V\" in \"\"|*[!0-9]*) continue;; esac; RX=$((RX + V)); V=$(printf \"%s\" \"$REST\" | awk \"{print \\$9}\"); case \"$V\" in \"\"|*[!0-9]*) continue;; esac; TX=$((TX + V)); done < /proc/net/dev; fi; printf \"__CF_WEBSSH_NETWORK_BYTES__\\t%d\\t%d\\n\" \"$TX\" \"$RX\"; sleep 3; done'";;
 const KEEPALIVE_NAME = new TextEncoder().encode('keepalive@openssh.com');
 
 export class SSHSession {
@@ -1184,11 +1200,28 @@ export class SSHSession {
     await this.sendAuxiliaryChannelClose(channel);
   }
 
-  // One snapshot is emitted per complete tick. A tick is delimited by the
-  // AGGREGATE marker (its start) and — because the shell prints CONNECTIONS
-  // after AGGREGATE and before the next AGGREGATE — the FIRST CONNECTIONS
-  // marker. We must NOT wait for the next AGGREGATE marker: doing so stalled
-  // the panel until two ticks had arrived (the "monitor stopped on open" bug).
+  // One snapshot is emitted per COMPLETE tick. A tick starts at the AGGREGATE
+  // marker and ends at the BYTES marker line, which the shell prints
+  // unconditionally at the very end of every sampling iteration:
+  //
+  //   __CF_WEBSSH_NETWORK_AGGREGATE__ ... rows ...
+  //   __CF_WEBSSH_NETWORK_CONNECTIONS__ ... rows ...
+  //   __CF_WEBSSH_NETWORK_BYTES__\t<tx>\t<rx>\n      <-- tick terminator
+  //
+  // The BYTES marker is a better tick boundary than the next AGGREGATE marker
+  // for two reasons:
+  //   1. It carries the NIC byte totals, so we can decode `bytesTotals` too —
+  //      otherwise the trailing BYTES line is silently dropped.
+  //   2. A single tick frequently spans several SSH DATA chunks and the
+  //      CONNECTIONS marker arrives BEFORE the connection rows. Emitting as
+  //      soon as CONNECTIONS appeared (the previous behaviour) produced an
+  //      always-empty `connections` array AND discarded the BYTES line, which
+  //      is exactly the "connection detail is always empty" real-device bug.
+  //
+  // We must still never wait forever (that caused the 8/3 "The network monitor
+  // stopped" incident — no emit → 30s idle → channel closed), so if the next
+  // AGGREGATE shows up before a BYTES line, we fall back to emitting the
+  // (incomplete) tick up to that marker.
   private consumeNetworkOutput(data: Uint8Array): void {
     this.networkBuffer += this.networkDecoder.decode(data, { stream: true });
     if (this.networkBuffer.length > NETWORK_MAX_BUFFER_BYTES) {
@@ -1202,6 +1235,8 @@ export class SSHSession {
     while (true) {
       const first = this.networkBuffer.indexOf(NETWORK_AGGREGATE_MARKER);
       if (first < 0) {
+        // No tick in flight — drop any leading noise but keep a partial marker
+        // prefix so an AGGREGATE marker split across two chunks is not lost.
         this.networkBuffer = retainTrailingMarkerPrefix(this.networkBuffer, NETWORK_AGGREGATE_MARKER);
         return;
       }
@@ -1210,10 +1245,26 @@ export class SSHSession {
       if (connectionsIndex < 0) return;
       const afterConnections = connectionsIndex + NETWORK_CONNECTIONS_MARKER.length;
       const nextAggregate = this.networkBuffer.indexOf(NETWORK_AGGREGATE_MARKER, afterConnections);
-      const end = nextAggregate < 0 ? this.networkBuffer.length : nextAggregate;
+      const bytesIndex = this.networkBuffer.indexOf(NETWORK_BYTES_MARKER, afterConnections);
+      // The BYTES marker terminates THIS tick only when it precedes the next
+      // AGGREGATE — a later tick's BYTES line must never be mistaken for ours.
+      const bytesBelongsToThisTick = bytesIndex >= 0 && (nextAggregate < 0 || bytesIndex < nextAggregate);
+      if (!bytesBelongsToThisTick) {
+        // Fallback: this tick has no BYTES terminator, but the next tick has
+        // already started — emit what we have rather than stalling forever.
+        if (nextAggregate < 0) return;
+        this.emitNetworkSnapshot(this.networkBuffer.slice(0, nextAggregate));
+        this.networkBuffer = this.networkBuffer.slice(nextAggregate);
+        continue;
+      }
+      // Wait for the newline ending the BYTES line so we never emit half a row
+      // (and so `bytesTotals` can be parsed from the complete line).
+      const bytesLineEnd = this.networkBuffer.indexOf('\n', bytesIndex);
+      if (bytesLineEnd < 0) return;
+      const end = bytesLineEnd + 1;
       this.emitNetworkSnapshot(this.networkBuffer.slice(0, end));
       this.networkBuffer = this.networkBuffer.slice(end);
-      if (nextAggregate < 0) return;
+      // Loop again — several complete ticks may be buffered in a single chunk.
     }
   }
 

@@ -8,7 +8,12 @@
     "noEmit": true,
     "skipLibCheck": true,
     "isolatedModules": true,
-    "forceConsistentCasingInFileNames": true
+    "forceConsistentCasingInFileNames": true,
+    // The browser bundle imports the shared IP-classification module
+    // (src/shared/ip-classify.ts) with an explicit `.ts` extension, matching the
+    // Node-native loader convention. `noEmit` above satisfies TS's requirement
+    // for this flag.
+    "allowImportingTsExtensions": true
   },
-  "include": ["frontend/src/**/*.ts"]
+  "include": ["frontend/src/**/*.ts", "src/shared/**/*.ts"]
 }

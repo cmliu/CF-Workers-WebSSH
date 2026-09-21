@@ -46,6 +46,8 @@ export interface NetworkAggregateRow {
   name: string;
   user: string;
   listen_ip: string;
+  /** Listening transport (`tcp` / `udp` / `tcp/udp`); empty when unknown. */
+  proto: string;
   listen_port: number;
   remote_ip_count: number;
   connection_count: number;
@@ -144,7 +146,7 @@ export function parseAggregateBlock(raw: string, _platform: string = 'linux'): N
       headerSeen = true;
       continue;
     }
-    if (fields.length < 9) {
+    if (fields.length < 10) {
       throw new NetworkParseError('Network aggregate row is malformed');
     }
     const pid = parseNonNegativeInteger(fields[0]);
@@ -156,11 +158,12 @@ export function parseAggregateBlock(raw: string, _platform: string = 'linux'): N
       name: fields[1] ?? '',
       user: fields[2] ?? '',
       listen_ip: fields[3] ?? '',
-      listen_port: parseNonNegativeInteger(fields[4]) ?? 0,
-      remote_ip_count: parseNonNegativeInteger(fields[5]) ?? 0,
-      connection_count: parseNonNegativeInteger(fields[6]) ?? 0,
-      bytes_sent: parseNonNegativeInteger(fields[7]) ?? 0,
-      bytes_recv: parseNonNegativeInteger(fields[8]) ?? 0,
+      proto: fields[4] ?? '',
+      listen_port: parseNonNegativeInteger(fields[5]) ?? 0,
+      remote_ip_count: parseNonNegativeInteger(fields[6]) ?? 0,
+      connection_count: parseNonNegativeInteger(fields[7]) ?? 0,
+      bytes_sent: parseNonNegativeInteger(fields[8]) ?? 0,
+      bytes_recv: parseNonNegativeInteger(fields[9]) ?? 0,
     });
   }
   if (!headerSeen) {

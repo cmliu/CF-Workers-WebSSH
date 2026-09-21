@@ -6,7 +6,13 @@ export function secureResponse(response: Response): Response {
   headers.set('Referrer-Policy', 'same-origin');
   headers.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
   if (response.headers.get('Content-Type')?.includes('text/html')) {
-    headers.set('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; img-src 'self' data:; font-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'");
+    // The "网络详情" tab resolves remote IPs by calling the third-party GEO API
+    // (https://api.090227.xyz) DIRECTLY from the browser. That cross-origin
+    // fetch is permitted only because the exact provider origin is listed in
+    // `connect-src` below — the provider reflects the request Origin, so the
+    // browser can read its response. The directive is deliberately NOT widened
+    // with `*` or a bare `https:` scheme: only this one origin is opened up.
+    headers.set('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss: https://api.090227.xyz; img-src 'self' data:; font-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'");
   }
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }
