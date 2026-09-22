@@ -48,6 +48,12 @@ import { classifyHostKey } from '../ssh/host-key';
 import { encodeString, readUint32, toBufferSource } from '../ssh/utils';
 import { parseTopSnapshot } from './top-parser';
 import { retainTrailingMarkerPrefix } from './process-framing';
+import {
+  NETWORK_AGGREGATE_MARKER,
+  NETWORK_BYTES_MARKER,
+  NETWORK_CONNECTIONS_MARKER,
+  parseNetworkSnapshot,
+} from './network-parser';
 
 type Cipher = SSHAESGCMCipher | SSHAESCTRCipher;
 type Phase = 'version' | 'kex' | 'host-confirm' | 'auth' | 'pty' | 'shell' | 'ready' | 'closed';
@@ -58,6 +64,12 @@ interface PendingSFTPChannelOpen {
   cancelled: boolean;
 }
 interface PendingProcessChannelOpen {
+  readonly channelID: number;
+  readonly channel: SSHChannel;
+  timeout: ReturnType<typeof setTimeout> | null;
+  cancelled: boolean;
+}
+interface PendingNetworkChannelOpen {
   readonly channelID: number;
   readonly channel: SSHChannel;
   timeout: ReturnType<typeof setTimeout> | null;
@@ -92,6 +104,11 @@ const PROCESS_KILL_CHANNEL_OPEN_TIMEOUT_MS = 15_000;
 // channel; cap the bytes we keep per stream so one bad request cannot exhaust worker memory.
 const PROCESS_KILL_MAX_BUFFER_BYTES = 4 * 1024;
 const PROCESS_SNAPSHOT_MARKER = '__CF_WEBSSH_TOP_SNAPSHOT__';
+const NETWORK_CHANNEL_OPEN_TIMEOUT_MS = 15_000;
+// `ss -tinp` prints two lines per socket; a busy host can emit several MB per
+// tick. Keep the same 4 MiB ceiling as the other auxiliary channels so a
+// misbehaving host cannot grow the buffer without bound.
+const NETWORK_MAX_BUFFER_BYTES = 4 * 1024 * 1024;
 // Octal escapes keep the delimiter itself out of the command line shown by top.
 // `top` flags differ across platforms: Linux procps uses `-n 1` (1 iteration) + `-c` (full command line),
 // but on FreeBSD `-n 1` means "show 1 process" and `-w` is unsupported — so the previous
@@ -114,6 +131,29 @@ const PROCESS_SNAPSHOT_MARKER = '__CF_WEBSSH_TOP_SNAPSHOT__';
 // (no /sys/class/net, netstat missing, non-numeric counters) leaves the block empty and the
 // frontend treats the tick as "no network sample".
 const PROCESS_MONITOR_COMMAND = "LC_ALL=C LANG=C sh -c 'os=$(uname -s 2>/dev/null || echo Linux); export COLUMNS=4096; while :; do printf \"\\137\\137CF_WEBSSH_TOP_SNAPSHOT\\137\\137\\n\"; case \"$os\" in FreeBSD) top -b -a -d 1 2>/dev/null || exit 127;; Darwin) top -l 1 -c -n 0 -s 0 2>/dev/null || exit 127;; *) top -b -c -n 1 -w 0 2>/dev/null || top -b -c -n 1 2>/dev/null || top -b -n 1 2>/dev/null || exit 127;; esac; printf \"\\137\\137CF_WEBSSH_NETWORK\\137\\137\\n\"; NETN=0; if [ -d /sys/class/net ]; then for NDIR in /sys/class/net/*; do [ -d \"$NDIR\" ] || continue; NAME=${NDIR##*/}; case \"$NAME\" in lo|docker*|veth*|br-*|tun*|tailscale*) continue;; esac; RX=$(cat \"$NDIR/statistics/rx_bytes\" 2>/dev/null) || continue; TX=$(cat \"$NDIR/statistics/tx_bytes\" 2>/dev/null) || continue; case \"$RX$TX\" in *[!0-9]*) continue;; esac; NETN=$((NETN+1)); [ \"$NETN\" -ge 32 ] && break; printf \"%s\\t%s\\t%s\\n\" \"$NAME\" \"$RX\" \"$TX\"; done; elif command -v netstat >/dev/null 2>&1; then netstat -ibn 2>/dev/null | grep -v \"^lo\" | grep \"<Link#[0-9]>\" | head -n 32 | awk -v OFS=\"\\t\" \"{print \\$1, \\$7, \\$10}\"; fi; sleep 2; done'";
+// Network monitor: Linux-only (`ss`) collector. It emits a per-PID aggregate table
+// (listening socket, connection + remote-IP counts, and socket-lifetime byte totals taken
+// from `ss -tinp` tcp_info), a per-connection detail block (one row per non-LISTEN TCP
+// socket: PID, PROTO=tcp, local addr/port, remote addr/port, state and that socket's own
+// bytes_acked/bytes_received), the NIC byte totals and a one-shot error line. Non-root hosts
+// emit the error instead of rows; hosts without `ss` emit `no supported tool (ss) available`.
+//
+// The AGGREGATE awk consumes three `ss` sections split by the `@@A@@` / `@@B@@` markers:
+// (0) `ss -tlnpn` TCP listeners, (1) `ss -tunpn` UDP sockets, (2) `ss -tinp` TCP sockets.
+// Sections 0-1 (`mode<2`) only record each PID's LISTENING socket — a UDP `UNCONN` row is
+// treated as a listener too — while section 2 (`mode==2`) is the SINGLE source of both the
+// connection / remote-IP counts AND the byte totals. Because the left-hand count and the
+// right-hand detail table now derive from the same `ss -tinp` pass, a UDP-only socket (e.g.
+// WireGuard/WARP) can no longer inflate the left count without a matching right-side row.
+//
+// The detail (CONNECTIONS) block runs its own `ss -tinp` pass piped through a small awk
+// that buffers one socket (its `users:(...)` line) until the following tcp_info continuation
+// line carrying the byte counters, then prints the row — LISTEN sockets are dropped because
+// their remote port is a wildcard (`*`), not digits. The pass is capped with `head -n 512`
+// so a busy host cannot bloat the channel buffer. The command is single-line, POSIX/dash and
+// mawk compatible, contains exactly two single quotes (the `sh -c` wrapper) and is < 4096
+// bytes for buildExecRequest().
+const NETWORK_MONITOR_COMMAND = "LC_ALL=C sh -c 'command -v ss >/dev/null 2>&1 || printf \"__CF_WEBSSH_NETWORK_ERROR__\\tno supported tool (ss) available\\n\"; ERRDONE=0; SEEN=0; while :; do printf \"__CF_WEBSSH_NETWORK_AGGREGATE__\\n\"; printf \"PID\\tNAME\\tUSER\\tLISTEN_IP\\tPROTO\\tLISTEN_PORT\\tREMOTE_IP_COUNT\\tCONNECTION_COUNT\\tBYTES_SENT\\tBYTES_RECV\\n\"; OUT=$( { ss -tlnpn 2>/dev/null; printf \"@@A@@\\n\"; ss -tunpn 2>/dev/null; printf \"@@B@@\\n\"; ss -tinp 2>/dev/null; } | awk \"BEGIN{Q=sprintf(\\\"%c\\\",34);mode=0} \\$0==\\\"@@A@@\\\"{mode=1;next} \\$0==\\\"@@B@@\\\"{mode=2;next} mode<2{s=\\$0;if(match(s,/users:[(]/)){nm=\\\"\\\";pid=\\\"\\\";t=s;sub(/.*users:[(][(]/,\\\"\\\",t);q=index(t,Q);if(q>0){u=substr(t,q+1);w=index(u,Q);if(w>0)nm=substr(u,1,w-1)};pp=index(s,\\\"pid=\\\");if(pp>0){d=substr(s,pp+4);if(match(d,/^[0-9]+/))pid=substr(d,1,RLENGTH)};if(pid!=\\\"\\\"&&(\\$1==\\\"LISTEN\\\"||\\$1==\\\"UNCONN\\\")){pr=\\\"tcp\\\";if(mode==1)pr=\\\"udp\\\";if(proto[pid]==\\\"\\\")proto[pid]=pr;else if(proto[pid]!=pr)proto[pid]=\\\"tcp/udp\\\";la=\\$4;lp=la;sub(/.*:/,\\\"\\\",lp);if(lp~/^[0-9]+\\$/){lip=la;sub(/:[0-9]+\\$/,\\\"\\\",lip);listen_ip[pid]=lip;listen_port[pid]=lp+0;have[pid]=1;name[pid]=nm}}};next} mode==2{if(match(\\$0,/users:[(]/)){nm=\\\"\\\";pid=\\\"\\\";t=\\$0;sub(/.*users:[(][(]/,\\\"\\\",t);q=index(t,Q);if(q>0){u=substr(t,q+1);w=index(u,Q);if(w>0)nm=substr(u,1,w-1)};pp=index(\\$0,\\\"pid=\\\");if(pp>0){d=substr(\\$0,pp+4);if(match(d,/^[0-9]+/))pid=substr(d,1,RLENGTH)};if(pid!=\\\"\\\"){cur=pid;have[pid]=1;if(nm!=\\\"\\\")name[pid]=nm;if(proto[pid]==\\\"\\\")proto[pid]=\\\"tcp\\\";ra=\\$5;rp=ra;sub(/.*:/,\\\"\\\",rp);if(rp~/^[0-9]+\\$/){rip=ra;sub(/:[0-9]+\\$/,\\\"\\\",rip);seen[pid \\\"|\\\" rip]=1;count[pid]++}}else{cur=\\\"\\\"};next}if(cur==\\\"\\\"){next}for(i=1;i<=NF;i++){if(index(\\$i,\\\"bytes_acked:\\\")==1)sent[cur]+=substr(\\$i,13);if(index(\\$i,\\\"bytes_received:\\\")==1)recv[cur]+=substr(\\$i,16)}next} END{for(p in have){n=0;for(k in seen){split(k,a,\\\"|\\\");if(a[1]==p)n++};printf \\\"%s\\\\t%s\\\\t%s\\\\t%s\\\\t%s\\\\t%d\\\\t%d\\\\t%d\\\\t%d\\\\t%d\\\\n\\\",p,name[p],\\\"\\\",listen_ip[p],proto[p],listen_port[p]+0,n,count[p]+0,sent[p]+0,recv[p]+0}}\" ); printf \"%s\\n\" \"$OUT\"; if [ -z \"$OUT\" ]; then if [ \"$SEEN\" = 0 ] && [ \"$ERRDONE\" = 0 ]; then printf \"__CF_WEBSSH_NETWORK_ERROR__\\tss -p needs root to show processes\\n\"; ERRDONE=1; fi; else SEEN=1; fi; printf \"__CF_WEBSSH_NETWORK_CONNECTIONS__\\n\"; printf \"PID\\tPROTO\\tLOCAL_ADDR\\tLOCAL_PORT\\tREMOTE_ADDR\\tREMOTE_PORT\\tSTATE\\tBYTES_SENT\\tBYTES_RECV\\n\"; ss -tinp 2>/dev/null | awk \"function P(){if(cur!=\\\"\\\")print cur\\\"\\\\ttcp\\\\t\\\"lip\\\"\\\\t\\\"lp\\\"\\\\t\\\"rip\\\"\\\\t\\\"rp\\\"\\\\t\\\"st\\\"\\\\t\\\"ac\\\"\\\\t\\\"rc} BEGIN{cur=\\\"\\\"} {if(match(\\$0,/users:[(]/)){P();pid=\\\"\\\";pp=index(\\$0,\\\"pid=\\\");if(pp>0){d=substr(\\$0,pp+4);if(match(d,/^[0-9]+/))pid=substr(d,1,RLENGTH)};if(pid==\\\"\\\"){cur=\\\"\\\";next};st=\\$1;la=\\$4;ra=\\$5;lp=la;sub(/.*:/,\\\"\\\",lp);if(lp!~/^[0-9]+\\$/){cur=\\\"\\\";next};rp=ra;sub(/.*:/,\\\"\\\",rp);if(rp!~/^[0-9]+\\$/){cur=\\\"\\\";next};lip=la;sub(/:[0-9]+\\$/,\\\"\\\",lip);rip=ra;sub(/:[0-9]+\\$/,\\\"\\\",rip);cur=pid;ac=0;rc=0;next};if(cur!=\\\"\\\"){for(i=1;i<=NF;i++){if(index(\\$i,\\\"bytes_acked:\\\")==1)ac+=substr(\\$i,13);if(index(\\$i,\\\"bytes_received:\\\")==1)rc+=substr(\\$i,16)}}} END{P()}\" | head -n 512; TX=0; RX=0; if [ -r /proc/net/dev ]; then while IFS=: read -r IFACE REST; do set -- $IFACE; IFACE=$1; case \"$IFACE\" in *[!a-zA-Z0-9_]*) continue;; esac; case \"$IFACE\" in lo|docker*|veth*|br-*|tun*|tailscale*) continue;; esac; V=$(printf \"%s\" \"$REST\" | awk \"{print \\$1}\"); case \"$V\" in \"\"|*[!0-9]*) continue;; esac; RX=$((RX + V)); V=$(printf \"%s\" \"$REST\" | awk \"{print \\$9}\"); case \"$V\" in \"\"|*[!0-9]*) continue;; esac; TX=$((TX + V)); done < /proc/net/dev; fi; printf \"__CF_WEBSSH_NETWORK_BYTES__\\t%d\\t%d\\n\" \"$TX\" \"$RX\"; sleep 3; done'";;
 const KEEPALIVE_NAME = new TextEncoder().encode('keepalive@openssh.com');
 
 export class SSHSession {
@@ -168,6 +208,12 @@ export class SSHSession {
   private processBuffer = '';
   private processDecoder = new TextDecoder();
   private pendingProcessChannelOpen: PendingProcessChannelOpen | null = null;
+  private networkChannel: SSHChannel | null = null;
+  private networkWebSocket: WebSocket | null = null;
+  private networkAttachUrl = '';
+  private networkBuffer = '';
+  private networkDecoder = new TextDecoder();
+  private pendingNetworkChannelOpen: PendingNetworkChannelOpen | null = null;
   // Concurrent `kill -TERM <pid>` requests, keyed by local channel ID. Each request gets its
   // own exec channel so the top-monitor channel stays undisturbed.
   private readonly pendingProcessKillChannels = new Map<number, PendingProcessKillChannel>();
@@ -248,6 +294,9 @@ export class SSHSession {
     this.clearPendingProcessChannelOpen();
     this.processChannel = null;
     this.processBuffer = '';
+    this.clearPendingNetworkChannelOpen();
+    this.networkChannel = null;
+    this.networkBuffer = '';
     for (const kill of this.pendingProcessKillChannels.values()) {
       if (kill.timeout) clearTimeout(kill.timeout);
     }
@@ -257,6 +306,8 @@ export class SSHSession {
     this.sftpWebSocket = null;
     try { this.processWebSocket?.close(normal ? 1000 : 1011, normal ? 'SSH session closed' : 'SSH session failed'); } catch { /* already closed */ }
     this.processWebSocket = null;
+    try { this.networkWebSocket?.close(normal ? 1000 : 1011, normal ? 'SSH session closed' : 'SSH session failed'); } catch { /* already closed */ }
+    this.networkWebSocket = null;
     this.pendingHostConfirmation?.resolve(false);
     this.pendingHostConfirmation = null;
     this.config.password = undefined;
@@ -687,10 +738,20 @@ export class SSHSession {
           await this.sendAuxiliaryChannelClose(channel);
           throw error;
         }
+      } else if (channel === this.networkChannel && this.networkWebSocket && !this.pendingNetworkChannelOpen?.cancelled) {
+        try {
+          await this.sendEncrypted(channel.buildExecRequest(NETWORK_MONITOR_COMMAND));
+        } catch (error) {
+          this.clearPendingNetworkChannelOpen(channel);
+          this.networkChannel = null;
+          await this.sendAuxiliaryChannelClose(channel);
+          throw error;
+        }
       } else {
         // An attachment WebSocket may close while its channel is opening.
         this.clearPendingSFTPChannelOpen(channel);
         this.clearPendingProcessChannelOpen(channel);
+        this.clearPendingNetworkChannelOpen(channel);
         await this.sendAuxiliaryChannelClose(channel);
       }
       return;
@@ -699,6 +760,7 @@ export class SSHSession {
       channel.handleOpenFailure(payload);
       this.clearPendingSFTPChannelOpen(channel);
       this.clearPendingProcessChannelOpen(channel);
+      this.clearPendingNetworkChannelOpen(channel);
       this.channels.delete(channelID);
       if (isShell) throw new Error('SSH server rejected the session channel');
       if (channel === this.sftpChannel) {
@@ -709,6 +771,9 @@ export class SSHSession {
       } else if (channel === this.processChannel) {
         this.processChannel = null;
         this.sendProcessError('SSH server rejected the process-monitor channel');
+      } else if (channel === this.networkChannel) {
+        this.networkChannel = null;
+        this.sendNetworkError('SSH server rejected the network-monitor channel');
       } else {
         const kill = this.pendingProcessKillChannels.get(channelID);
         if (kill) this.finalizeProcessKill(kill, 'SSH server rejected the kill channel');
@@ -751,6 +816,15 @@ export class SSHSession {
         } else {
           this.sendProcessJson({ type: 'process_ready' });
         }
+      } else if (channel === this.networkChannel) {
+        this.clearPendingNetworkChannelOpen(channel);
+        if (type === SSH_MSG_CHANNEL_FAILURE) {
+          this.networkChannel = null;
+          this.sendNetworkError('SSH server rejected the network monitor command');
+          await this.sendAuxiliaryChannelClose(channel);
+        } else {
+          this.sendNetworkJson({ type: 'network_ready' });
+        }
       }
       return;
     }
@@ -768,6 +842,8 @@ export class SSHSession {
         }
       } else if (channel === this.processChannel) {
         this.consumeProcessOutput(output);
+      } else if (channel === this.networkChannel) {
+        this.consumeNetworkOutput(output);
       } else if (this.pendingProcessKillChannels.has(channelID)) {
         this.appendKillOutput(this.pendingProcessKillChannels.get(channelID)!, output, false);
       }
@@ -784,6 +860,9 @@ export class SSHSession {
       } else if (channel === this.processChannel) {
         const message = new TextDecoder().decode(output).trim();
         if (message) this.sendProcessError(message.slice(0, 512));
+      } else if (channel === this.networkChannel) {
+        const message = new TextDecoder().decode(output).trim();
+        if (message) this.sendNetworkError(message.slice(0, 512));
       } else if (this.pendingProcessKillChannels.has(channelID)) {
         this.appendKillOutput(this.pendingProcessKillChannels.get(channelID)!, output, true);
       }
@@ -801,6 +880,7 @@ export class SSHSession {
       if (isShell) this.status('remote_eof', 'SSH server finished sending output');
       else if (channel === this.sftpChannel) this.sftpHandler?.onClosed();
       else if (channel === this.processChannel) this.flushProcessBuffer();
+      else if (channel === this.networkChannel) this.flushNetworkBuffer();
       return;
     }
     if (type === SSH_MSG_CHANNEL_CLOSE) {
@@ -821,6 +901,11 @@ export class SSHSession {
           this.flushProcessBuffer();
           this.processChannel = null;
           this.sendProcessError('The process monitor stopped');
+        } else if (channel === this.networkChannel) {
+          this.clearPendingNetworkChannelOpen(channel);
+          this.flushNetworkBuffer();
+          this.networkChannel = null;
+          this.sendNetworkError('The network monitor stopped');
         } else {
           const kill = this.pendingProcessKillChannels.get(channelID);
           if (kill) this.finalizeProcessKill(kill);
@@ -843,6 +928,7 @@ export class SSHSession {
     this.status('shell_ready', 'Shell is ready');
     if (this.sftpAttachUrl) this.sendJson({ type: 'sftp_attach', url: this.sftpAttachUrl });
     if (this.processAttachUrl) this.sendJson({ type: 'process_attach', url: this.processAttachUrl });
+    if (this.networkAttachUrl) this.sendJson({ type: 'network_attach', url: this.networkAttachUrl });
     void this.flushInput();
   }
 
@@ -912,6 +998,38 @@ export class SSHSession {
       return;
     }
     throw new Error('Unsupported process-monitor message');
+  }
+
+  setNetworkAttachUrl(url: string): void {
+    if (!/^\/api\/network\?/.test(url)) throw new Error('Invalid network attach URL');
+    this.networkAttachUrl = url;
+  }
+
+  attachNetworkWebSocket(ws: WebSocket): void {
+    if (this.phase === 'closed' || this.networkWebSocket) {
+      try { ws.close(1008, 'Network monitor is unavailable'); } catch { /* already closed */ }
+      return;
+    }
+    this.networkWebSocket = ws;
+  }
+
+  detachNetworkWebSocket(ws: WebSocket): void {
+    if (this.networkWebSocket !== ws) return;
+    this.networkWebSocket = null;
+    void this.closeNetworkChannel();
+  }
+
+  async handleNetworkClientMessage(message: string | ArrayBuffer): Promise<void> {
+    if (this.phase === 'closed' || !this.networkWebSocket) return;
+    if (message instanceof ArrayBuffer || message.length > 4096) throw new Error('Invalid network-monitor message');
+    let decoded: unknown;
+    try { decoded = JSON.parse(message); } catch { throw new Error('Invalid network-monitor JSON'); }
+    if (!decoded || typeof decoded !== 'object' || Array.isArray(decoded)) throw new Error('Invalid network-monitor message');
+    const value = decoded as Record<string, unknown>;
+    if (value.type === 'ping') { this.sendNetworkJson({ type: 'pong' }); return; }
+    if (value.type === 'network_start') { await this.openNetworkChannel(); return; }
+    if (value.type === 'network_stop') { await this.closeNetworkChannel(); return; }
+    throw new Error('Unsupported network-monitor message');
   }
 
   private async openProcessKillChannel(pid: number, requestId: string): Promise<void> {
@@ -1041,6 +1159,157 @@ export class SSHSession {
     if (pending.timeout) clearTimeout(pending.timeout);
     pending.timeout = null;
     this.pendingProcessChannelOpen = null;
+  }
+
+  private async openNetworkChannel(): Promise<void> {
+    if (!this.networkWebSocket) throw new Error('Network-monitor WebSocket is not attached');
+    if (this.phase !== 'ready') throw new Error('SSH connection is not ready');
+    if (this.pendingNetworkChannelOpen?.cancelled) throw new Error('The previous network channel is still closing');
+    if (this.networkChannel) {
+      this.sendNetworkJson({ type: 'network_ready' });
+      return;
+    }
+    const channelID = this.nextChannelID++;
+    const channel = new SSHChannel();
+    const pending: PendingNetworkChannelOpen = { channelID, channel, timeout: null, cancelled: false };
+    this.channels.set(channelID, channel);
+    this.networkChannel = channel;
+    this.networkBuffer = '';
+    this.networkDecoder = new TextDecoder();
+    this.pendingNetworkChannelOpen = pending;
+    try {
+      await this.sendEncrypted(channel.buildOpenSession(channelID));
+      if (this.pendingNetworkChannelOpen === pending) {
+        pending.timeout = setTimeout(() => this.expirePendingNetworkChannelOpen(pending), NETWORK_CHANNEL_OPEN_TIMEOUT_MS);
+      }
+    } catch (error) {
+      this.clearPendingNetworkChannelOpen(channel);
+      this.channels.delete(channelID);
+      this.networkChannel = null;
+      throw error;
+    }
+  }
+
+  private async closeNetworkChannel(): Promise<void> {
+    const channel = this.networkChannel;
+    const pending = this.pendingNetworkChannelOpen;
+    if (pending?.channel === channel) pending.cancelled = true;
+    this.networkChannel = null;
+    this.networkBuffer = '';
+    if (!channel?.isOpen()) return;
+    await this.sendAuxiliaryChannelClose(channel);
+  }
+
+  // One snapshot is emitted per COMPLETE tick. A tick starts at the AGGREGATE
+  // marker and ends at the BYTES marker line, which the shell prints
+  // unconditionally at the very end of every sampling iteration:
+  //
+  //   __CF_WEBSSH_NETWORK_AGGREGATE__ ... rows ...
+  //   __CF_WEBSSH_NETWORK_CONNECTIONS__ ... rows ...
+  //   __CF_WEBSSH_NETWORK_BYTES__\t<tx>\t<rx>\n      <-- tick terminator
+  //
+  // The BYTES marker is a better tick boundary than the next AGGREGATE marker
+  // for two reasons:
+  //   1. It carries the NIC byte totals, so we can decode `bytesTotals` too —
+  //      otherwise the trailing BYTES line is silently dropped.
+  //   2. A single tick frequently spans several SSH DATA chunks and the
+  //      CONNECTIONS marker arrives BEFORE the connection rows. Emitting as
+  //      soon as CONNECTIONS appeared (the previous behaviour) produced an
+  //      always-empty `connections` array AND discarded the BYTES line, which
+  //      is exactly the "connection detail is always empty" real-device bug.
+  //
+  // We must still never wait forever (that caused the 8/3 "The network monitor
+  // stopped" incident — no emit → 30s idle → channel closed), so if the next
+  // AGGREGATE shows up before a BYTES line, we fall back to emitting the
+  // (incomplete) tick up to that marker.
+  private consumeNetworkOutput(data: Uint8Array): void {
+    this.networkBuffer += this.networkDecoder.decode(data, { stream: true });
+    if (this.networkBuffer.length > NETWORK_MAX_BUFFER_BYTES) {
+      const marker = this.networkBuffer.lastIndexOf(NETWORK_AGGREGATE_MARKER);
+      this.networkBuffer = marker >= 0
+        ? this.networkBuffer.slice(marker)
+        : retainTrailingMarkerPrefix(this.networkBuffer, NETWORK_AGGREGATE_MARKER);
+      this.sendNetworkError('Network snapshot exceeded the buffer limit');
+      return;
+    }
+    while (true) {
+      const first = this.networkBuffer.indexOf(NETWORK_AGGREGATE_MARKER);
+      if (first < 0) {
+        // No tick in flight — drop any leading noise but keep a partial marker
+        // prefix so an AGGREGATE marker split across two chunks is not lost.
+        this.networkBuffer = retainTrailingMarkerPrefix(this.networkBuffer, NETWORK_AGGREGATE_MARKER);
+        return;
+      }
+      if (first > 0) this.networkBuffer = this.networkBuffer.slice(first);
+      const connectionsIndex = this.networkBuffer.indexOf(NETWORK_CONNECTIONS_MARKER, NETWORK_AGGREGATE_MARKER.length);
+      if (connectionsIndex < 0) return;
+      const afterConnections = connectionsIndex + NETWORK_CONNECTIONS_MARKER.length;
+      const nextAggregate = this.networkBuffer.indexOf(NETWORK_AGGREGATE_MARKER, afterConnections);
+      const bytesIndex = this.networkBuffer.indexOf(NETWORK_BYTES_MARKER, afterConnections);
+      // The BYTES marker terminates THIS tick only when it precedes the next
+      // AGGREGATE — a later tick's BYTES line must never be mistaken for ours.
+      const bytesBelongsToThisTick = bytesIndex >= 0 && (nextAggregate < 0 || bytesIndex < nextAggregate);
+      if (!bytesBelongsToThisTick) {
+        // Fallback: this tick has no BYTES terminator, but the next tick has
+        // already started — emit what we have rather than stalling forever.
+        if (nextAggregate < 0) return;
+        this.emitNetworkSnapshot(this.networkBuffer.slice(0, nextAggregate));
+        this.networkBuffer = this.networkBuffer.slice(nextAggregate);
+        continue;
+      }
+      // Wait for the newline ending the BYTES line so we never emit half a row
+      // (and so `bytesTotals` can be parsed from the complete line).
+      const bytesLineEnd = this.networkBuffer.indexOf('\n', bytesIndex);
+      if (bytesLineEnd < 0) return;
+      const end = bytesLineEnd + 1;
+      this.emitNetworkSnapshot(this.networkBuffer.slice(0, end));
+      this.networkBuffer = this.networkBuffer.slice(end);
+      // Loop again — several complete ticks may be buffered in a single chunk.
+    }
+  }
+
+  private flushNetworkBuffer(): void {
+    this.networkBuffer += this.networkDecoder.decode();
+    const marker = this.networkBuffer.indexOf(NETWORK_AGGREGATE_MARKER);
+    if (marker >= 0) this.emitNetworkSnapshot(this.networkBuffer.slice(marker));
+    this.networkBuffer = '';
+    this.networkDecoder = new TextDecoder();
+  }
+
+  private emitNetworkSnapshot(raw: string): void {
+    try {
+      const snapshot = parseNetworkSnapshot(raw, Date.now(), 'linux');
+      this.sendNetworkJson({ type: 'network_snapshot', ...snapshot });
+    } catch (error) {
+      this.sendNetworkError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  private expirePendingNetworkChannelOpen(expected: PendingNetworkChannelOpen): void {
+    if (this.pendingNetworkChannelOpen !== expected) return;
+    this.pendingNetworkChannelOpen = null;
+    expected.timeout = null;
+    expected.cancelled = true;
+    if (this.networkChannel === expected.channel) this.networkChannel = null;
+    this.sendNetworkError('Timed out opening the network-monitor channel');
+    if (expected.channel.isOpen()) void this.sendAuxiliaryChannelClose(expected.channel);
+    try { this.networkWebSocket?.close(1011, 'Network channel setup timed out'); } catch { /* already closed */ }
+  }
+
+  private clearPendingNetworkChannelOpen(channel?: SSHChannel): void {
+    const pending = this.pendingNetworkChannelOpen;
+    if (!pending || (channel && pending.channel !== channel)) return;
+    if (pending.timeout) clearTimeout(pending.timeout);
+    pending.timeout = null;
+    this.pendingNetworkChannelOpen = null;
+  }
+
+  private sendNetworkJson(value: unknown): void {
+    if (this.networkWebSocket?.readyState === WebSocket.OPEN) this.networkWebSocket.send(JSON.stringify(value));
+  }
+
+  private sendNetworkError(message: string): void {
+    this.sendNetworkJson({ type: 'network_error', message });
   }
 
   private appendKillOutput(kill: PendingProcessKillChannel, output: Uint8Array, isStderr: boolean): void {

@@ -7,7 +7,8 @@ import { SSHSession } from './session';
 interface MainAttachment { role: 'main'; phase: 'waiting' | 'connecting' | 'connected' }
 interface SFTPAttachment { role: 'sftp'; phase: 'connected' }
 interface ProcessAttachment { role: 'process'; phase: 'connected' }
-type Attachment = MainAttachment | SFTPAttachment | ProcessAttachment;
+interface NetworkAttachment { role: 'network'; phase: 'connected' }
+type Attachment = MainAttachment | SFTPAttachment | ProcessAttachment | NetworkAttachment;
 interface StoredTicket { secret: number[]; expiresAt: number; ip: string }
 interface PendingConnection {
   cancelled: boolean;
@@ -42,13 +43,18 @@ export class SSHSessionDO implements DurableObject {
   private readonly processSessions = new Map<WebSocket, SSHSession>();
   private readonly processOwners = new Map<WebSocket, WebSocket>();
   private readonly processWebSocketsByMain = new Map<WebSocket, Set<WebSocket>>();
+  private readonly networkAttachTokens = new Map<string, AuxiliaryAttachToken>();
+  private readonly networkTokenByMainWebSocket = new Map<WebSocket, string>();
+  private readonly networkSessions = new Map<WebSocket, SSHSession>();
+  private readonly networkOwners = new Map<WebSocket, WebSocket>();
+  private readonly networkWebSocketsByMain = new Map<WebSocket, Set<WebSocket>>();
 
   constructor(state: DurableObjectState, env: Env) {
     this.state = state;
     this.env = env;
     for (const ws of state.getWebSockets()) {
       const attachment = ws.deserializeAttachment() as Attachment | null;
-      if (attachment?.role === 'sftp' || attachment?.role === 'process') {
+      if (attachment?.role === 'sftp' || attachment?.role === 'process' || attachment?.role === 'network') {
         try { ws.close(1012, 'Worker session restarted; reconnect required'); } catch { /* already closed */ }
       } else if (attachment?.phase === 'connected') {
         try { ws.close(1012, 'Worker session restarted; reconnect required'); } catch { /* already closed */ }
@@ -76,16 +82,21 @@ export class SSHSessionDO implements DurableObject {
     }
     if (url.pathname === '/sftp') return this.attachSFTP(request);
     if (url.pathname === '/processes') return this.attachProcesses(request);
+    if (url.pathname === '/network') return this.attachNetworks(request);
     if (url.pathname !== '/connect') return Response.json({ error: 'Not found' }, { status: 404 });
     if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') return Response.json({ error: 'WebSocket upgrade required' }, { status: 426 });
     const sftpAttachToken = request.headers.get('x-sftp-attach-token');
     const sftpAttachUrl = request.headers.get('x-sftp-attach-url');
     const processAttachToken = request.headers.get('x-process-attach-token');
     const processAttachUrl = request.headers.get('x-process-attach-url');
+    const networkAttachToken = request.headers.get('x-network-attach-token');
+    const networkAttachUrl = request.headers.get('x-network-attach-url');
     if (!sftpAttachToken || !SFTP_ATTACH_TOKEN_PATTERN.test(sftpAttachToken)
       || !sftpAttachUrl || !this.isValidAttachUrl(sftpAttachUrl, sftpAttachToken, '/api/sftp')
       || !processAttachToken || !SFTP_ATTACH_TOKEN_PATTERN.test(processAttachToken)
-      || !processAttachUrl || !this.isValidAttachUrl(processAttachUrl, processAttachToken, '/api/processes')) {
+      || !processAttachUrl || !this.isValidAttachUrl(processAttachUrl, processAttachToken, '/api/processes')
+      || !networkAttachToken || !SFTP_ATTACH_TOKEN_PATTERN.test(networkAttachToken)
+      || !networkAttachUrl || !this.isValidAttachUrl(networkAttachUrl, networkAttachToken, '/api/network')) {
       return Response.json({ error: 'Invalid attachment authorization' }, { status: 400 });
     }
     const ticket = request.headers.get('x-session-ticket');
@@ -100,6 +111,7 @@ export class SSHSessionDO implements DurableObject {
     server.serializeAttachment({ role: 'main', phase: 'waiting' } satisfies MainAttachment);
     this.registerSFTPAttachToken(sftpAttachToken, sftpAttachUrl, server);
     this.registerProcessAttachToken(processAttachToken, processAttachUrl, server);
+    this.registerNetworkAttachToken(networkAttachToken, networkAttachUrl, server);
     const deadline = setTimeout(() => this.reject(server, 'Connect message timeout'), 10_000);
     this.deadlines.set(server, deadline);
     return new Response(null, { status: 101, webSocket: client });
@@ -117,6 +129,20 @@ export class SSHSessionDO implements DurableObject {
         await processSession.handleProcessClientMessage(message);
       } catch (error) {
         try { ws.send(JSON.stringify({ type: 'process_error', message: error instanceof Error ? error.message : String(error) })); } catch { /* already closed */ }
+      }
+      return;
+    }
+    const networkSession = this.networkSessions.get(ws);
+    if (networkSession || this.isNetworkWebSocket(ws)) {
+      try {
+        if (!networkSession || ws.readyState !== WebSocket.OPEN) {
+          this.cleanupNetworkWebSocket(ws);
+          if (ws.readyState === WebSocket.OPEN) ws.close(1008, 'Network monitor is unavailable');
+          return;
+        }
+        await networkSession.handleNetworkClientMessage(message);
+      } catch (error) {
+        try { ws.send(JSON.stringify({ type: 'network_error', message: error instanceof Error ? error.message : String(error) })); } catch { /* already closed */ }
       }
       return;
     }
@@ -181,6 +207,12 @@ export class SSHSessionDO implements DurableObject {
         processAttach.session = ssh;
         ssh.setProcessAttachUrl(processAttach.attachUrl);
       }
+      const networkToken = this.networkTokenByMainWebSocket.get(ws);
+      const networkAttach = networkToken ? this.networkAttachTokens.get(networkToken) : undefined;
+      if (networkAttach) {
+        networkAttach.session = ssh;
+        ssh.setNetworkAttachUrl(networkAttach.attachUrl);
+      }
       this.sessions.set(ws, ssh);
       this.pendingConnections.delete(ws);
       pending.socket = undefined;
@@ -193,12 +225,14 @@ export class SSHSessionDO implements DurableObject {
 
   async webSocketClose(ws: WebSocket): Promise<void> {
     if (this.isProcessWebSocket(ws)) this.cleanupProcessWebSocket(ws);
+    else if (this.isNetworkWebSocket(ws)) this.cleanupNetworkWebSocket(ws);
     else if (this.isSFTPWebSocket(ws)) this.cleanupSFTPWebSocket(ws);
     else this.cleanup(ws);
   }
 
   async webSocketError(ws: WebSocket): Promise<void> {
     if (this.isProcessWebSocket(ws)) this.cleanupProcessWebSocket(ws);
+    else if (this.isNetworkWebSocket(ws)) this.cleanupNetworkWebSocket(ws);
     else if (this.isSFTPWebSocket(ws)) this.cleanupSFTPWebSocket(ws);
     else this.cleanup(ws);
   }
@@ -304,6 +338,37 @@ export class SSHSessionDO implements DurableObject {
     return new Response(null, { status: 101, webSocket: client });
   }
 
+  private attachNetworks(request: Request): Response {
+    if (request.method !== 'GET') return Response.json({ error: 'Method not allowed' }, { status: 405 });
+    if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') {
+      return Response.json({ error: 'WebSocket upgrade required' }, { status: 426 });
+    }
+    const token = request.headers.get('x-network-attach-token');
+    if (!token || !SFTP_ATTACH_TOKEN_PATTERN.test(token)) {
+      return Response.json({ error: 'Invalid network attachment token' }, { status: 401 });
+    }
+    const attach = this.networkAttachTokens.get(token);
+    if (!attach || attach.mainWebSocket.readyState !== WebSocket.OPEN) {
+      if (attach) this.deleteNetworkAttachToken(token, attach);
+      return Response.json({ error: 'Invalid or expired network attachment token' }, { status: 401 });
+    }
+    if (!attach.session) return Response.json({ error: 'SSH session is still initializing' }, { status: 409 });
+    // Keep the token valid after attach so the client can auto-reconnect the network monitor.
+    // It is deleted in cleanup() when the main SSH session closes.
+    const pair = new WebSocketPair();
+    const client = pair[0];
+    const server = pair[1];
+    this.state.acceptWebSocket(server);
+    server.serializeAttachment({ role: 'network', phase: 'connected' } satisfies NetworkAttachment);
+    this.networkSessions.set(server, attach.session);
+    this.networkOwners.set(server, attach.mainWebSocket);
+    const sockets = this.networkWebSocketsByMain.get(attach.mainWebSocket) ?? new Set<WebSocket>();
+    sockets.add(server);
+    this.networkWebSocketsByMain.set(attach.mainWebSocket, sockets);
+    attach.session.attachNetworkWebSocket(server);
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
   private registerSFTPAttachToken(token: string, attachUrl: string, mainWebSocket: WebSocket): void {
     // The SFTP token intentionally lives for the lifetime of the main SSH
     // session (it is removed in cleanup() when that session closes). This
@@ -336,6 +401,31 @@ export class SSHSessionDO implements DurableObject {
     this.processTokenByMainWebSocket.set(mainWebSocket, token);
   }
 
+  private registerNetworkAttachToken(token: string, attachUrl: string, mainWebSocket: WebSocket): void {
+    // The network-monitor token intentionally lives for the lifetime of the main SSH
+    // session (it is removed in cleanup() when that session closes). This lets the client
+    // re-attach the network monitor after a transient drop instead of being locked out by a
+    // one-time token. The SSH session setup still gates attach on attach.session being ready.
+    const attach: AuxiliaryAttachToken = {
+      mainWebSocket,
+      attachUrl,
+      expiresAt: Number.MAX_SAFE_INTEGER,
+      timeout: null,
+    };
+    this.networkAttachTokens.set(token, attach);
+    this.networkTokenByMainWebSocket.set(mainWebSocket, token);
+  }
+
+  private deleteNetworkAttachToken(token: string, expected?: AuxiliaryAttachToken): void {
+    const attach = this.networkAttachTokens.get(token);
+    if (!attach || (expected && attach !== expected)) return;
+    if (attach.timeout !== null) clearTimeout(attach.timeout);
+    this.networkAttachTokens.delete(token);
+    if (this.networkTokenByMainWebSocket.get(attach.mainWebSocket) === token) {
+      this.networkTokenByMainWebSocket.delete(attach.mainWebSocket);
+    }
+  }
+
   private deleteProcessAttachToken(token: string, expected?: AuxiliaryAttachToken): void {
     const attach = this.processAttachTokens.get(token);
     if (!attach || (expected && attach !== expected)) return;
@@ -356,7 +446,7 @@ export class SSHSessionDO implements DurableObject {
     }
   }
 
-  private isValidAttachUrl(value: string, token: string, pathname: '/api/sftp' | '/api/processes'): boolean {
+  private isValidAttachUrl(value: string, token: string, pathname: '/api/sftp' | '/api/processes' | '/api/network'): boolean {
     if (value.length > 2048) return false;
     try {
       const url = new URL(value, 'https://session.invalid');
@@ -414,6 +504,8 @@ export class SSHSessionDO implements DurableObject {
     if (token) this.deleteSFTPAttachToken(token);
     const processToken = this.processTokenByMainWebSocket.get(ws);
     if (processToken) this.deleteProcessAttachToken(processToken);
+    const networkToken = this.networkTokenByMainWebSocket.get(ws);
+    if (networkToken) this.deleteNetworkAttachToken(networkToken);
     const sftpWebSockets = this.sftpWebSocketsByMain.get(ws);
     if (sftpWebSockets) {
       for (const sftpWebSocket of [...sftpWebSockets]) {
@@ -429,6 +521,14 @@ export class SSHSessionDO implements DurableObject {
         try { processWebSocket.close(1000, 'SSH session closed'); } catch { /* already closed */ }
       }
       this.processWebSocketsByMain.delete(ws);
+    }
+    const networkWebSockets = this.networkWebSocketsByMain.get(ws);
+    if (networkWebSockets) {
+      for (const networkWebSocket of [...networkWebSockets]) {
+        this.cleanupNetworkWebSocket(networkWebSocket);
+        try { networkWebSocket.close(1000, 'SSH session closed'); } catch { /* already closed */ }
+      }
+      this.networkWebSocketsByMain.delete(ws);
     }
     const pending = this.pendingConnections.get(ws);
     if (pending) {
@@ -476,6 +576,25 @@ export class SSHSessionDO implements DurableObject {
     if (this.processSessions.has(ws)) return true;
     const attachment = ws.deserializeAttachment() as Attachment | null;
     return attachment?.role === 'process';
+  }
+
+  private cleanupNetworkWebSocket(ws: WebSocket): void {
+    const session = this.networkSessions.get(ws);
+    if (!session) return;
+    this.networkSessions.delete(ws);
+    try { session.detachNetworkWebSocket(ws); } catch { /* session is already closed */ }
+    const mainWebSocket = this.networkOwners.get(ws);
+    this.networkOwners.delete(ws);
+    if (!mainWebSocket) return;
+    const sockets = this.networkWebSocketsByMain.get(mainWebSocket);
+    sockets?.delete(ws);
+    if (sockets?.size === 0) this.networkWebSocketsByMain.delete(mainWebSocket);
+  }
+
+  private isNetworkWebSocket(ws: WebSocket): boolean {
+    if (this.networkSessions.has(ws)) return true;
+    const attachment = ws.deserializeAttachment() as Attachment | null;
+    return attachment?.role === 'network';
   }
 
   private assertConnectionActive(ws: WebSocket, pending: PendingConnection, socket?: Socket): void {
